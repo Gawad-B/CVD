@@ -223,21 +223,6 @@ Configure in `app.py`:
 - Advanced analytics dashboard
 - Multi-language support
 
-## Contributing
-
-1. Create a feature branch (`git checkout -b feature/your-feature`)
-2. Commit changes (`git commit -am 'Add feature'`)
-3. Push to branch (`git push origin feature/your-feature`)
-4. Submit pull request
-
-## License
-
-Proprietary - Cardiology Screening System
-
-## Support
-
-For issues or questions, contact the development team.
-
 ## Methods & Approach
 
 This project follows an engineering-first, data-driven approach to cardiology risk screening:
@@ -288,13 +273,22 @@ Integration points and key flows:
 - Backups & DR: schedule regular PostgreSQL backups and retain `model/` artifacts in a versioned artifact store.
 - Monitoring: surface request/endpoint errors and inference latencies; log model-version with every prediction for monitoring drift.
 
-## Troubleshooting
-
-- Missing model files: verify `Back-End/model/` contains `preprocessor_ml.joblib` and `meta_learner.joblib` before calling `/api/predict`.
-- DB schema mismatch: run `psql < Back-End/database/schema.sql` or inspect `schema.sql` for expected tables.
-- Auth failures: check JWT secret consistency between front-end `VITE_API_URL` usage and back-end configuration.
-
 ## Contact
 
 For architecture or ML questions, contact the development team. For deployment/ops, include model artifact checksums and relevant logs.
+
+## Contributing
+
+1. Create a feature branch (`git checkout -b feature/your-feature`)
+2. Commit changes (`git commit -am 'Add feature'`)
+3. Push to branch (`git push origin feature/your-feature`)
+4. Submit pull request
+
+## License
+
+Proprietary - Cardiology Screening System
+
+## Support
+
+For issues or questions, contact the development team.
 
