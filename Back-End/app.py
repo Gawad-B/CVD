@@ -64,13 +64,14 @@ BASE_MODEL_PATHS = {
 META_MODEL_PATH = MODEL_DIR / "meta_learner.joblib"
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "480"))
 
-raw_origins = os.getenv("CORS_ORIGINS", "*")
+
+raw_origins = os.getenv("CORS_ORIGINS", "https://cvd-pi.vercel.app")
 cors_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 app = FastAPI(title="Cardiology Screening API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins or ["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
