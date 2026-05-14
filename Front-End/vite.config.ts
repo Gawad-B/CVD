@@ -44,6 +44,17 @@ export default defineConfig(({ mode }) => {
           },
         }
       : undefined,
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            "vendor-react": ["react", "react-dom", "react-router"],
+            "vendor-ui": ["@mui/material", "@mui/icons-material", "lucide-react"],
+            "vendor-charts": ["recharts"],
+          },
+        },
+      },
+    },
 
     // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
     assetsInclude: ['**/*.svg', '**/*.csv'],

@@ -218,6 +218,24 @@ Currently no automated test suite. Test manually via:
 Configure in `app.py`:
 - Database connection string
 - JWT secret key
+
+## Deployment notes (Render + Vercel + Neon)
+
+1. **Vercel SPA routing (404 on refresh fix)**
+   - Deploy from `Front-End/` root and keep `Front-End/vercel.json`.
+   - The rewrite rule sends deep links (e.g. `/models`) to `index.html`, so browser refresh works on all routes.
+
+2. **Frontend production env**
+   - Set `VITE_API_BASE_URL` in Vercel to your Render backend URL (for example: `https://your-backend.onrender.com`).
+
+3. **Model registry availability in production**
+   - Backend now auto-ensures at least one **active** model row in `model_registry`.
+   - If the table is empty in Neon, a default `CVD Meta Learner` entry is bootstrapped from `Back-End/model/metrics_ml.json`.
+
+4. **Performance optimizations applied**
+   - Route-level lazy loading via `React.lazy` + `Suspense` to reduce initial JS payload.
+   - Manual vendor chunk splitting in Vite build config for better cache efficiency.
+   - Long-cache headers for static `/assets/*` files via Vercel config.
 - CORS origins
 - Model paths
 

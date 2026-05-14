@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import math
 import os
 import secrets
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
 try:
     import joblib
@@ -63,6 +64,7 @@ BASE_MODEL_PATHS = {
     "lr": MODEL_DIR / "model_lr.joblib",
 }
 META_MODEL_PATH = MODEL_DIR / "meta_learner.joblib"
+METRICS_PATH = MODEL_DIR / "metrics_ml.json"
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "480"))
 PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "600000"))
 
@@ -420,6 +422,86 @@ def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "last_login_at": to_iso(user["last_login"]),
         "created_at": to_iso(user["created_at"]),
     }
+
+
+def read_default_model_metrics() -> Dict[str, float]:
+    if METRICS_PATH.exists():
+        with METRICS_PATH.open("r", encoding="utf-8") as metrics_file:
+            metrics = json.load(metrics_file)
+        return {
+            "accuracy": float(metrics.get("accuracy") or 0),
+            "auc": float(metrics.get("auc") or 0),
+            "precision_score": float(metrics.get("precision") or 0),
+            "recall_score": float(metrics.get("recall") or 0),
+            "f1_score": float(metrics.get("f1") or 0),
+        }
+    return {
+        "accuracy": 0.0,
+        "auc": 0.0,
+        "precision_score": 0.0,
+        "recall_score": 0.0,
+        "f1_score": 0.0,
+    }
+
+
+def ensure_active_model_registry_entry(db: Any) -> None:
+    with db.cursor() as cursor:
+        cursor.execute(
+            "SELECT id FROM model_registry WHERE lower(status) = 'active' ORDER BY created_at DESC LIMIT 1"
+        )
+        if cursor.fetchone():
+            return
+
+        cursor.execute("SELECT id FROM model_registry ORDER BY created_at DESC LIMIT 1")
+        latest_model = cursor.fetchone()
+        if latest_model:
+            cursor.execute("UPDATE model_registry SET status = 'active' WHERE id = %s", (latest_model["id"],))
+            db.commit()
+            return
+
+        metrics = read_default_model_metrics()
+        validation_metrics = {
+            "source": "bootstrap_metrics_ml",
+            "accuracy": metrics["accuracy"],
+            "auc": metrics["auc"],
+            "precision": metrics["precision_score"],
+            "recall": metrics["recall_score"],
+            "f1": metrics["f1_score"],
+        }
+        cursor.execute(
+            """
+            INSERT INTO model_registry (
+                name, version, status, algorithm, use_case,
+                accuracy, auc, precision_score, recall_score, f1_score, validation_metrics
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (name, version)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                algorithm = EXCLUDED.algorithm,
+                use_case = EXCLUDED.use_case,
+                accuracy = EXCLUDED.accuracy,
+                auc = EXCLUDED.auc,
+                precision_score = EXCLUDED.precision_score,
+                recall_score = EXCLUDED.recall_score,
+                f1_score = EXCLUDED.f1_score,
+                validation_metrics = EXCLUDED.validation_metrics
+            """,
+            (
+                "CVD Meta Learner",
+                "1.0.0",
+                "active",
+                "meta_learner",
+                "cardiovascular_disease_risk",
+                metrics["accuracy"],
+                metrics["auc"],
+                metrics["precision_score"],
+                metrics["recall_score"],
+                metrics["f1_score"],
+                Json(validation_metrics),
+            ),
+        )
+    db.commit()
 
 
 def load_ml_model() -> Optional[Any]:
@@ -1158,6 +1240,7 @@ def get_models(
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
     authorize_user(db, authorization, allowed_roles={"admin", "doctor"}, request=request)
+    ensure_active_model_registry_entry(db)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1196,6 +1279,7 @@ def get_model(
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     authorize_user(db, authorization, allowed_roles={"admin", "doctor"}, request=request)
+    ensure_active_model_registry_entry(db)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1386,6 +1470,7 @@ def get_patient_risk_assessments(
 
 
 def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any]:
+    ensure_active_model_registry_entry(db)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1965,6 +2050,7 @@ def dashboard_stats(
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
+    ensure_active_model_registry_entry(db)
     with db.cursor() as cursor:
         cursor.execute("SELECT COUNT(*) AS count FROM patients")
         total_patients = int(cursor.fetchone()["count"])

@@ -1,18 +1,7 @@
-import type { ComponentType, ReactNode } from "react";
+import { Suspense, lazy, type ComponentType, type ReactNode } from "react";
 import { Navigate, createBrowserRouter, useLocation } from "react-router";
 import { Layout } from "./components/Layout";
-import { Login } from "./components/Login";
-import { Dashboard } from "./components/Dashboard";
-import { PatientsList } from "./components/PatientsList";
-import { PatientDetails } from "./components/PatientDetails";
-import { RiskAssessmentForm } from "./components/RiskAssessmentForm";
-import { RiskAssessmentsList } from "./components/RiskAssessmentsList";
-import { RiskAssessmentDetails } from "./components/RiskAssessmentDetails";
-import { ModelRegistry } from "./components/ModelRegistry";
-import { AuditLog } from "./components/AuditLog";
-import { UserManagement } from "./components/UserManagement";
 import { RootLayout } from "./components/RootLayout";
-import { Forbidden } from "./components/Forbidden";
 import { useAuth } from "./context/AuthContext";
 import {
   ALL_ROLES,
@@ -23,6 +12,30 @@ import {
   hasRoleAccess,
   type Role,
 } from "./auth/permissions";
+
+const Login = lazy(() => import("./components/Login").then((module) => ({ default: module.Login })));
+const Dashboard = lazy(() => import("./components/Dashboard").then((module) => ({ default: module.Dashboard })));
+const PatientsList = lazy(() => import("./components/PatientsList").then((module) => ({ default: module.PatientsList })));
+const PatientDetails = lazy(() => import("./components/PatientDetails").then((module) => ({ default: module.PatientDetails })));
+const RiskAssessmentForm = lazy(
+  () => import("./components/RiskAssessmentForm").then((module) => ({ default: module.RiskAssessmentForm }))
+);
+const RiskAssessmentsList = lazy(
+  () => import("./components/RiskAssessmentsList").then((module) => ({ default: module.RiskAssessmentsList }))
+);
+const RiskAssessmentDetails = lazy(
+  () => import("./components/RiskAssessmentDetails").then((module) => ({ default: module.RiskAssessmentDetails }))
+);
+const ModelRegistry = lazy(() => import("./components/ModelRegistry").then((module) => ({ default: module.ModelRegistry })));
+const AuditLog = lazy(() => import("./components/AuditLog").then((module) => ({ default: module.AuditLog })));
+const UserManagement = lazy(
+  () => import("./components/UserManagement").then((module) => ({ default: module.UserManagement }))
+);
+const Forbidden = lazy(() => import("./components/Forbidden").then((module) => ({ default: module.Forbidden })));
+
+function RouteLoadingFallback() {
+  return <div className="p-6 text-sm text-gray-600">Loading page...</div>;
+}
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -54,7 +67,9 @@ function withGuards(Component: ComponentType, roles: readonly Role[]) {
     return (
       <RequireAuth>
         <RequireRole roles={roles}>
-          <Component />
+          <Suspense fallback={<RouteLoadingFallback />}>
+            <Component />
+          </Suspense>
         </RequireRole>
       </RequireAuth>
     );
@@ -72,7 +87,9 @@ function ProtectedLayout() {
 function LoginRoute() {
   return (
     <GuestOnly>
-      <Login />
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <Login />
+      </Suspense>
     </GuestOnly>
   );
 }
