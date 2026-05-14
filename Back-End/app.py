@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import math
 import os
 import secrets
@@ -63,6 +64,7 @@ BASE_MODEL_PATHS = {
 }
 META_MODEL_PATH = MODEL_DIR / "meta_learner.joblib"
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "480"))
+PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "600000"))
 
 
 raw_origins = os.getenv("CORS_ORIGINS", "https://cvd-pi.vercel.app")
@@ -76,6 +78,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next: Any) -> Any:
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    return response
 
 
 class LoginRequest(BaseModel):
@@ -229,9 +241,48 @@ def md5_hash(password: str) -> str:
     return hashlib.md5(password.encode("utf-8")).hexdigest()
 
 
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        PBKDF2_ITERATIONS,
+    ).hex()
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def verify_pbkdf2_password(raw_password: str, stored_hash: str) -> bool:
+    parts = stored_hash.split("$")
+    if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        return False
+    _, iteration_text, salt, expected_digest = parts
+    try:
+        iterations = int(iteration_text)
+    except ValueError:
+        return False
+    actual_digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        raw_password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations,
+    ).hex()
+    return hmac.compare_digest(actual_digest, expected_digest)
+
+
 def password_matches(raw_password: str, stored_hash: str) -> bool:
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        return verify_pbkdf2_password(raw_password, stored_hash)
     digest = md5_hash(raw_password)
-    return stored_hash in {digest, f"md5{digest}"}
+    return hmac.compare_digest(stored_hash, digest) or hmac.compare_digest(stored_hash, f"md5{digest}")
+
+
+def password_hash_needs_upgrade(stored_hash: str) -> bool:
+    return not stored_hash.startswith("pbkdf2_sha256$")
+
+
+def hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def bearer_token(authorization: Optional[str]) -> str:
@@ -246,18 +297,80 @@ def optional_session_user_id(db: Any, authorization: Optional[str]) -> Optional[
     token = authorization.replace("Bearer ", "", 1).strip()
     if not token:
         return None
+    token_hash = hash_session_token(token)
     with db.cursor() as cursor:
         cursor.execute(
             """
             SELECT user_id
             FROM sessions
-            WHERE token = %s AND expires_at > NOW()
+            WHERE (token = %s OR token = %s) AND expires_at > NOW()
             LIMIT 1
             """,
-            (token,),
+            (token_hash, token),
         )
         row = cursor.fetchone()
     return int(row["user_id"]) if row else None
+
+
+def get_authenticated_user(db: Any, authorization: Optional[str]) -> Dict[str, Any]:
+    token = bearer_token(authorization)
+    token_hash = hash_session_token(token)
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT u.id, u.username, u.email, u.role
+            FROM sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE (s.token = %s OR s.token = %s)
+              AND s.expires_at > NOW()
+              AND u.is_active = TRUE
+            LIMIT 1
+            """,
+            (token_hash, token),
+        )
+        user = cursor.fetchone()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return {
+        "id": int(user["id"]),
+        "username": user["username"],
+        "email": user["email"],
+        "role": user["role"],
+    }
+
+
+def authorize_user(
+    db: Any,
+    authorization: Optional[str],
+    *,
+    allowed_roles: set[str],
+    request: Optional[Request] = None,
+) -> Dict[str, Any]:
+    user = get_authenticated_user(db, authorization)
+    if user["role"] in allowed_roles:
+        return user
+
+    if request is not None:
+        method_to_action = {
+            "GET": "read",
+            "POST": "create",
+            "PUT": "update",
+            "PATCH": "update",
+            "DELETE": "delete",
+        }
+        log_audit_event(
+            db,
+            action_type=method_to_action.get(request.method.upper(), "read"),
+            resource_type="authorization",
+            endpoint=str(request.url.path),
+            method=request.method,
+            outcome="denied",
+            ip_address=request.client.host if request.client else None,
+            user_id=user["id"],
+        )
+        db.commit()
+
+    raise HTTPException(status_code=403, detail="Insufficient permissions")
 
 
 def log_audit_event(
@@ -655,10 +768,16 @@ def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) ->
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         token = secrets.token_urlsafe(48)
+        token_hash = hash_session_token(token)
         expires_at = datetime.utcnow() + timedelta(minutes=SESSION_TTL_MINUTES)
+        if password_hash_needs_upgrade(user["password_hash"]):
+            cursor.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (hash_password(payload.password), user["id"]),
+            )
         cursor.execute(
             "INSERT INTO sessions (user_id, token, expires_at) VALUES (%s, %s, %s)",
-            (user["id"], token, expires_at),
+            (user["id"], token_hash, expires_at),
         )
         cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user["id"],))
         log_audit_event(
@@ -691,12 +810,13 @@ def logout(
     db: Any = Depends(get_db),
 ) -> Dict[str, bool]:
     token = bearer_token(authorization)
+    token_hash = hash_session_token(token)
     user_id: Optional[int] = None
     with db.cursor() as cursor:
-        cursor.execute("SELECT user_id FROM sessions WHERE token = %s LIMIT 1", (token,))
+        cursor.execute("SELECT user_id FROM sessions WHERE token = %s OR token = %s LIMIT 1", (token_hash, token))
         session_row = cursor.fetchone()
         user_id = int(session_row["user_id"]) if session_row else None
-        cursor.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        cursor.execute("DELETE FROM sessions WHERE token = %s OR token = %s", (token_hash, token))
         log_audit_event(
             db,
             action_type="logout",
@@ -713,21 +833,7 @@ def logout(
 
 @app.get("/api/auth/me")
 def me(authorization: Optional[str] = Header(default=None), db: Any = Depends(get_db)) -> Dict[str, Any]:
-    token = bearer_token(authorization)
-    with db.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT u.id, u.username, u.email, u.role
-            FROM sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.token = %s AND s.expires_at > NOW() AND u.is_active = TRUE
-            LIMIT 1
-            """,
-            (token,),
-        )
-        user = cursor.fetchone()
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    user = get_authenticated_user(db, authorization)
     return {
         "id": user["id"],
         "user_id": user["id"],
@@ -738,7 +844,12 @@ def me(authorization: Optional[str] = Header(default=None), db: Any = Depends(ge
 
 
 @app.get("/api/patients")
-def get_patients(db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
+def get_patients(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -768,7 +879,13 @@ def get_patients(db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
 
 
 @app.get("/api/patients/{patient_id}")
-def get_patient(patient_id: int, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def get_patient(
+    patient_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -797,7 +914,13 @@ def get_patient(patient_id: int, db: Any = Depends(get_db)) -> Dict[str, Any]:
 
 
 @app.post("/api/patients", status_code=201)
-def create_patient(payload: CreatePatientRequest, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def create_patient(
+    payload: CreatePatientRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -837,7 +960,14 @@ def create_patient(payload: CreatePatientRequest, db: Any = Depends(get_db)) -> 
 
 
 @app.patch("/api/patients/{patient_id}")
-def update_patient(patient_id: int, payload: UpdatePatientRequest, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def update_patient(
+    patient_id: int,
+    payload: UpdatePatientRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -891,7 +1021,13 @@ def update_patient(patient_id: int, payload: UpdatePatientRequest, db: Any = Dep
 
 
 @app.delete("/api/patients/{patient_id}")
-def deactivate_patient(patient_id: int, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def deactivate_patient(
+    patient_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -910,7 +1046,13 @@ def deactivate_patient(patient_id: int, db: Any = Depends(get_db)) -> Dict[str, 
 
 
 @app.get("/api/patients/{patient_id}/encounters")
-def get_patient_encounters(patient_id: int, db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
+def get_patient_encounters(
+    patient_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -958,7 +1100,13 @@ def get_patient_encounters(patient_id: int, db: Any = Depends(get_db)) -> List[D
 
 
 @app.post("/api/encounters", status_code=201)
-def create_encounter(payload: CreateEncounterRequest, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def create_encounter(
+    payload: CreateEncounterRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1004,7 +1152,12 @@ def create_encounter(payload: CreateEncounterRequest, db: Any = Depends(get_db))
 
 
 @app.get("/api/models")
-def get_models(db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
+def get_models(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1036,7 +1189,13 @@ def get_models(db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
 
 
 @app.get("/api/models/{model_id}")
-def get_model(model_id: int, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def get_model(
+    model_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1091,7 +1250,12 @@ def get_model(model_id: int, db: Any = Depends(get_db)) -> Dict[str, Any]:
 
 
 @app.get("/api/risk-assessments")
-def get_risk_assessments(db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
+def get_risk_assessments(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1131,7 +1295,13 @@ def get_risk_assessments(db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
 
 
 @app.get("/api/risk-assessments/{assessment_id}")
-def get_risk_assessment(assessment_id: int, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def get_risk_assessment(
+    assessment_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1171,7 +1341,13 @@ def get_risk_assessment(assessment_id: int, db: Any = Depends(get_db)) -> Dict[s
 
 
 @app.get("/api/patients/{patient_id}/risk-assessments")
-def get_patient_risk_assessments(patient_id: int, db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
+def get_patient_risk_assessments(
+    patient_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1394,6 +1570,7 @@ def create_risk_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     result = _predict_and_store(payload, db)
     log_audit_event(
         db,
@@ -1411,7 +1588,13 @@ def create_risk_assessment(
 
 
 @app.post("/api/predict")
-def predict(payload: RiskAssessmentRequest, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def predict(
+    payload: RiskAssessmentRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     return _predict_and_store(payload, db)
 
 
@@ -1423,6 +1606,7 @@ def review_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     status = payload.reviewStatus.strip().lower()
     if status not in {"pending", "reviewed"}:
         raise HTTPException(status_code=400, detail="Invalid review status")
@@ -1466,6 +1650,7 @@ def delete_risk_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, bool]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1496,10 +1681,13 @@ def delete_risk_assessment(
 
 @app.get("/api/audit-log")
 def get_audit_log(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
+    authorize_user(db, authorization, allowed_roles={"admin", "auditor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1530,7 +1718,12 @@ def get_audit_log(
 
 
 @app.get("/api/users")
-def get_users(db: Any = Depends(get_db)) -> List[Dict[str, Any]]:
+def get_users(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1552,6 +1745,7 @@ def create_user(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
     role = payload.role.strip().lower()
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -1587,7 +1781,7 @@ def create_user(
                 payload.username.strip(),
                 payload.email.strip(),
                 role,
-                md5_hash(payload.password),
+                hash_password(payload.password),
             ),
         )
         user = cursor.fetchone()
@@ -1607,7 +1801,13 @@ def create_user(
 
 
 @app.get("/api/users/{user_id}")
-def get_user(user_id: int, db: Any = Depends(get_db)) -> Dict[str, Any]:
+def get_user(
+    user_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1631,6 +1831,7 @@ def update_user(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
     username = payload.username.strip() if payload.username is not None else None
     email = payload.email.strip() if payload.email is not None else None
     role = payload.role.strip().lower() if payload.role is not None else None
@@ -1686,7 +1887,7 @@ def update_user(
             values.append(payload.isActive)
         if password is not None:
             assignments.append("password_hash = %s")
-            values.append(md5_hash(password))
+            values.append(hash_password(password))
 
         if not assignments:
             raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -1724,6 +1925,7 @@ def delete_user(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> None:
+    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
     actor_user_id = optional_session_user_id(db, authorization)
     if actor_user_id == user_id:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
@@ -1757,7 +1959,12 @@ def delete_user(
 
 
 @app.get("/api/dashboard/stats")
-def dashboard_stats(db: Any = Depends(get_db)) -> Dict[str, Any]:
+def dashboard_stats(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute("SELECT COUNT(*) AS count FROM patients")
         total_patients = int(cursor.fetchone()["count"])
@@ -1773,6 +1980,17 @@ def dashboard_stats(db: Any = Depends(get_db)) -> Dict[str, Any]:
             """
         )
         distribution = {row["risk_level"]: int(row["count"]) for row in cursor.fetchall()}
+
+        cursor.execute(
+            """
+            SELECT accuracy
+            FROM model_registry
+            WHERE lower(status) = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+        active_model_row = cursor.fetchone()
 
         cursor.execute(
             """
@@ -1802,6 +2020,7 @@ def dashboard_stats(db: Any = Depends(get_db)) -> Dict[str, Any]:
         "totalPatients": total_patients,
         "totalAssessments": total_assessments,
         "riskDistribution": distribution,
+        "activeModelAccuracy": float((active_model_row or {}).get("accuracy") or 0),
         "recentAssessments": recent,
     }
 

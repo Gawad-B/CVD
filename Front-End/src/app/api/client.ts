@@ -2,6 +2,7 @@ import type {
   AuditLogEntry,
   CreateEncounterInput,
   CreateUserInput,
+  DashboardStats,
   Encounter,
   Model,
   Patient,
@@ -258,6 +259,13 @@ export async function getUsers(): Promise<User[]> {
   return asArray<any>(data).map(mapUser);
 }
 
+export async function getDashboardStats(): Promise<DashboardStats> {
+  const data = await fetchJson<any>("/api/dashboard/stats");
+  return {
+    activeModelAccuracy: Number(data.activeModelAccuracy ?? data.active_model_accuracy ?? 0),
+  };
+}
+
 export async function createUser(payload: CreateUserInput): Promise<User> {
   const data = await fetchJson<any>("/api/users", {
     method: "POST",
@@ -288,4 +296,14 @@ export async function loginUser(username: string, password: string): Promise<any
 
   // Backend returns {token, user}
   return data;
+}
+
+export async function getCurrentUser(): Promise<any> {
+  return fetchJson<any>("/api/auth/me");
+}
+
+export async function logoutUser(): Promise<void> {
+  await fetchJson("/api/auth/logout", {
+    method: "POST",
+  });
 }

@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { loginUser as apiLoginUser } from '../api/client';
+import { getCurrentUser, loginUser as apiLoginUser, logoutUser as apiLogoutUser } from '../api/client';
 import type { User } from '../api/types';
 
 interface AuthContextType {
@@ -29,6 +29,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       navigate('/login');
     }
   }, [user, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+
+    getCurrentUser()
+      .then((rawUser) => {
+        const validatedUser: User = {
+          userId: Number(rawUser.id ?? rawUser.user_id ?? user?.userId ?? 0),
+          username: String(rawUser.username ?? user?.username ?? ''),
+          email: String(rawUser.email ?? user?.email ?? ''),
+          fullName: String(rawUser.full_name ?? rawUser.username ?? user?.fullName ?? ''),
+          role: (rawUser.role ?? user?.role ?? 'clinician') as User['role'],
+          isActive: true,
+          createdAt: rawUser.created_at ?? user?.createdAt,
+        };
+        setUser(validatedUser);
+        localStorage.setItem('cardio_user', JSON.stringify(validatedUser));
+      })
+      .catch(() => {
+        setUser(null);
+        setToken(null);
+        localStorage.removeItem('cardio_user');
+        localStorage.removeItem('cardio_token');
+      });
+  }, [token]);
 
   const login = async (username: string, password: string) => {
     try {
@@ -59,6 +86,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    if (token) {
+      void apiLogoutUser().catch(() => undefined);
+    }
     setUser(null);
     setToken(null);
     localStorage.removeItem('cardio_user');

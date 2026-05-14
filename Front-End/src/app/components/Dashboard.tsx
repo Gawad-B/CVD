@@ -1,24 +1,35 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Users, FileText, AlertTriangle, TrendingUp } from 'lucide-react';
 import { Link } from 'react-router';
-import { getModels, getPatients, getRiskAssessments } from '../api/client';
+import { getDashboardStats, getModels, getPatients, getRiskAssessments } from '../api/client';
 import type { Model, Patient, RiskAssessment } from '../api/types';
+import { useAuth } from '../context/AuthContext';
+import { MODELS_ROLES, hasRoleAccess } from '../auth/permissions';
 
 export function Dashboard() {
+  const { user } = useAuth();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [assessments, setAssessments] = useState<RiskAssessment[]>([]);
   const [models, setModels] = useState<Model[]>([]);
+  const [activeModelAccuracy, setActiveModelAccuracy] = useState(0);
+  const canViewModels = hasRoleAccess(user?.role, MODELS_ROLES);
 
   useEffect(() => {
     let isMounted = true;
 
-    Promise.all([getPatients(), getRiskAssessments(), getModels()])
-      .then(([loadedPatients, loadedAssessments, loadedModels]) => {
+    Promise.all([
+      getPatients(),
+      getRiskAssessments(),
+      getDashboardStats(),
+      canViewModels ? getModels() : Promise.resolve<Model[]>([]),
+    ])
+      .then(([loadedPatients, loadedAssessments, dashboardStats, loadedModels]) => {
         if (!isMounted) {
           return;
         }
         setPatients(loadedPatients);
         setAssessments(loadedAssessments);
+        setActiveModelAccuracy(dashboardStats.activeModelAccuracy);
         setModels(loadedModels);
       })
       .catch(() => {
@@ -27,13 +38,14 @@ export function Dashboard() {
         }
         setPatients([]);
         setAssessments([]);
+        setActiveModelAccuracy(0);
         setModels([]);
       });
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [canViewModels]);
 
   const highRiskCount = useMemo(() => assessments.filter(a => a.riskLevel === 'high').length, [assessments]);
   const mediumRiskCount = useMemo(() => assessments.filter(a => a.riskLevel === 'medium').length, [assessments]);
@@ -66,10 +78,10 @@ export function Dashboard() {
     },
     {
       name: 'Active Model Accuracy',
-      value: `${(activeModel?.accuracy ?? 0) * 100}%`,
+      value: `${(activeModelAccuracy * 100).toFixed(1)}%`,
       icon: TrendingUp,
       color: 'bg-purple-500',
-      link: '/models'
+      link: canViewModels ? '/models' : '/'
     },
   ];
 
@@ -196,12 +208,14 @@ export function Dashboard() {
               <p className="text-lg mb-1">{activeModel.modelName}</p>
               <p className="text-sm text-gray-600">Version {activeModel.modelVersion} • {activeModel.algorithm}</p>
             </div>
-            <Link
-              to="/models"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
-            >
-              View Details
-            </Link>
+            {canViewModels && (
+              <Link
+                to="/models"
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+              >
+                View Details
+              </Link>
+            )}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mt-6">
             <div>

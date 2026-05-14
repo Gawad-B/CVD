@@ -147,3 +147,7 @@ export interface RiskAssessmentResponse {
   riskLevel: "low" | "medium" | "high";
   recommendation: string;
 }
+
+export interface DashboardStats {
+  activeModelAccuracy: number;
+}

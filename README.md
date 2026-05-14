@@ -117,9 +117,9 @@ psql cardiology < Back-End/database/schema.sql
 ## API Endpoints
 
 ### Authentication
-- `POST /api/login` - User login
-- `POST /api/logout` - User logout
-- `POST /api/refresh-token` - Refresh JWT token
+- `POST /api/auth/login` - User login
+- `POST /api/auth/logout` - User logout
+- `GET /api/auth/me` - Validate current session token and return user profile
 
 ### Users
 - `GET /api/users` - List all users
@@ -140,8 +140,19 @@ psql cardiology < Back-End/database/schema.sql
 
 ### Risk Assessments
 - `POST /api/risk-assessments` - Create risk assessment
+- `GET /api/risk-assessments` - List all risk assessments
+- `GET /api/risk-assessments/{assessment_id}` - Get one risk assessment
+- `PATCH /api/risk-assessments/{assessment_id}/review` - Update review status
+- `DELETE /api/risk-assessments/{assessment_id}` - Delete risk assessment
 - `GET /api/patients/{patient_id}/risk-assessments` - List patient assessments
 - `POST /api/predict` - Get risk prediction
+
+### Models / Audit / Dashboard
+- `GET /api/models` - List models
+- `GET /api/models/{model_id}` - Get model details
+- `GET /api/audit-log` - List audit logs
+- `GET /api/dashboard/stats` - Dashboard aggregate stats
+- `GET /api/health` - Health check
 
 ## Data Models
 
@@ -162,19 +173,21 @@ psql cardiology < Back-End/database/schema.sql
 
 ## Authentication & Authorization
 
-- JWT tokens used for API authentication
+- Session tokens are used for API authentication (`Authorization: Bearer <token>`)
 - Token stored in localStorage on front-end
-- Automatic token refresh on expiry
-- Role-based access control enforced server-side
-- Session tracking with optional user context
+- Role-based access control is enforced on both backend endpoints and frontend routes
+- Unauthorized direct URL access is blocked by route guards
+- Session tracking is persisted in the `sessions` table with expiry
 
 ## Data Privacy & Security
 
 - Patient sensitive data (DOB, contact) stored separately from main patient record
 - Soft-delete policy preserves audit trail
-- Encrypted password storage with bcrypt
+- Password storage uses PBKDF2-HMAC-SHA256 with per-user salt and high iteration count
+- Legacy MD5 password hashes are transparently upgraded on successful login
+- Session tokens are stored hashed in the database
 - SQL parameterized queries prevent injection
-- JWT tokens with configurable expiry
+- Security headers are applied by the API (nosniff, frame deny, CSP, referrer policy)
 
 ## Development
 
@@ -198,7 +211,8 @@ Currently no automated test suite. Test manually via:
 ## Environment Variables
 
 ### Front-End
-- `VITE_API_URL` - Backend API URL (default: http://localhost:8000)
+- `VITE_API_BASE_URL` - Backend API URL (example: `http://localhost:8000`)
+- `VITE_API_PROXY_TARGET` - Optional Vite dev proxy target
 
 ### Back-End
 Configure in `app.py`:
@@ -291,4 +305,3 @@ Proprietary - Cardiology Screening System
 ## Support
 
 For issues or questions, contact the development team.
-

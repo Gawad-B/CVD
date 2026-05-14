@@ -13,6 +13,7 @@ import {
   X
 } from 'lucide-react';
 import { useState } from 'react';
+import { ALL_ROLES, AUDIT_ROLES, MODELS_ROLES, PATIENTS_ROLES, USER_MANAGEMENT_ROLES } from '../auth/permissions';
 
 export function Layout() {
   const { user, logout } = useAuth();
@@ -20,12 +21,12 @@ export function Layout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navigation = [
-    { name: 'Dashboard', href: '/', icon: LayoutDashboard, roles: ['admin', 'doctor', 'clinician', 'auditor'] },
-    { name: 'Patients', href: '/patients', icon: Users, roles: ['admin', 'doctor', 'clinician'] },
-    { name: 'Risk Assessments', href: '/assessments', icon: FileText, roles: ['admin', 'doctor', 'clinician', 'auditor'] },
-    { name: 'Model Registry', href: '/models', icon: Brain, roles: ['admin', 'doctor'] },
-    { name: 'Audit Log', href: '/audit', icon: ShieldCheck, roles: ['admin', 'auditor'] },
-    { name: 'User Management', href: '/users', icon: Settings, roles: ['admin'] },
+    { name: 'Dashboard', href: '/', icon: LayoutDashboard, roles: ALL_ROLES },
+    { name: 'Patients', href: '/patients', icon: Users, roles: PATIENTS_ROLES },
+    { name: 'Risk Assessments', href: '/assessments', icon: FileText, roles: ALL_ROLES },
+    { name: 'Model Registry', href: '/models', icon: Brain, roles: MODELS_ROLES },
+    { name: 'Audit Log', href: '/audit', icon: ShieldCheck, roles: AUDIT_ROLES },
+    { name: 'User Management', href: '/users', icon: Settings, roles: USER_MANAGEMENT_ROLES },
   ];
 
   const filteredNav = navigation.filter(item => 
