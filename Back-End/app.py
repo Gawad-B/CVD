@@ -67,6 +67,8 @@ META_MODEL_PATH = MODEL_DIR / "meta_learner.joblib"
 METRICS_PATH = MODEL_DIR / "metrics_ml.json"
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "480"))
 PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "600000"))
+LOW_RISK_MAX_PROBABILITY = float(os.getenv("LOW_RISK_MAX_PROBABILITY", "0.15"))
+MEDIUM_RISK_MAX_PROBABILITY = float(os.getenv("MEDIUM_RISK_MAX_PROBABILITY", "0.30"))
 
 
 raw_origins = os.getenv("CORS_ORIGINS", "https://cvd-pi.vercel.app")
@@ -502,6 +504,65 @@ def ensure_active_model_registry_entry(db: Any) -> None:
             ),
         )
     db.commit()
+
+
+def ensure_cds_rules_seeded(db: Any) -> None:
+    with db.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) AS count FROM cds_rules WHERE active = TRUE")
+        active_count = int(cursor.fetchone()["count"])
+        if active_count > 0:
+            return
+
+        defaults = [
+            (
+                "low",
+                0.0,
+                LOW_RISK_MAX_PROBABILITY,
+                "Low risk: continue healthy lifestyle and routine follow-up.",
+                10,
+            ),
+            (
+                "medium",
+                LOW_RISK_MAX_PROBABILITY,
+                MEDIUM_RISK_MAX_PROBABILITY,
+                "Moderate risk: schedule clinician follow-up and risk-factor management.",
+                20,
+            ),
+            (
+                "high",
+                MEDIUM_RISK_MAX_PROBABILITY,
+                1.0,
+                "High risk: prioritize clinician review and preventative intervention planning.",
+                30,
+            ),
+        ]
+
+        for risk_level, min_probability, max_probability, recommendation, priority in defaults:
+            cursor.execute(
+                """
+                INSERT INTO cds_rules (risk_level, min_probability, max_probability, recommendation, active, priority)
+                VALUES (%s, %s, %s, %s, TRUE, %s)
+                """,
+                (risk_level, min_probability, max_probability, recommendation, priority),
+            )
+    db.commit()
+
+
+def fallback_risk_classification(probability: float) -> Dict[str, str]:
+    if probability < LOW_RISK_MAX_PROBABILITY:
+        return {
+            "risk_level": "low",
+            "recommendation": "Low risk: continue healthy lifestyle and routine follow-up.",
+        }
+    if probability < MEDIUM_RISK_MAX_PROBABILITY:
+        return {
+            "risk_level": "medium",
+            "recommendation": "Moderate risk: schedule clinician follow-up and risk-factor management.",
+        }
+    return {
+        "risk_level": "high",
+        "recommendation": "High risk: prioritize clinician review and preventative intervention planning.",
+    }
 
 
 def load_ml_model() -> Optional[Any]:
@@ -1471,6 +1532,7 @@ def get_patient_risk_assessments(
 
 def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any]:
     ensure_active_model_registry_entry(db)
+    ensure_cds_rules_seeded(db)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1575,26 +1637,36 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
         probability = float(model.predict_proba(df[feature_cols])[0][1])
 
     with db.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT risk_level, recommendation
-            FROM cds_rules
-            WHERE active = TRUE
-              AND min_probability <= %s
-              AND max_probability >= %s
-            ORDER BY priority DESC
-            LIMIT 1
-            """,
-            (probability, probability),
-        )
-        cds_rule = cursor.fetchone()
+        def select_cds_rule(score: float) -> Optional[Dict[str, Any]]:
+            cursor.execute(
+                """
+                SELECT risk_level, recommendation
+                FROM cds_rules
+                WHERE active = TRUE
+                  AND min_probability <= %s
+                  AND max_probability >= %s
+                ORDER BY (max_probability - min_probability) ASC, priority DESC
+                LIMIT 1
+                """,
+                (score, score),
+            )
+            return cursor.fetchone()
 
-        risk_level = cds_rule["risk_level"] if cds_rule else "medium"
-        recommendation = (
-            cds_rule["recommendation"]
-            if cds_rule
-            else "Recommend clinician follow-up for cardiovascular risk review."
-        )
+        cds_rule = select_cds_rule(probability)
+        if not cds_rule:
+            cursor.execute("SELECT COALESCE(MAX(max_probability), 0) AS max_probability FROM cds_rules WHERE active = TRUE")
+            max_probability = float(cursor.fetchone()["max_probability"] or 0)
+            # Backward compatibility with deployments that stored rule ranges as percentages (0-100).
+            if max_probability > 1.0:
+                cds_rule = select_cds_rule(probability * 100.0)
+
+        if cds_rule:
+            risk_level = cds_rule["risk_level"]
+            recommendation = cds_rule["recommendation"]
+        else:
+            fallback = fallback_risk_classification(probability)
+            risk_level = fallback["risk_level"]
+            recommendation = fallback["recommendation"]
 
         cursor.execute(
             """
