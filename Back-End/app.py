@@ -449,9 +449,30 @@ def read_default_model_metrics() -> Dict[str, float]:
 def ensure_active_model_registry_entry(db: Any) -> None:
     with db.cursor() as cursor:
         cursor.execute(
-            "SELECT id FROM model_registry WHERE lower(status) = 'active' ORDER BY created_at DESC LIMIT 1"
+            """
+            SELECT id, name, algorithm
+            FROM model_registry
+            WHERE lower(status) = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
         )
-        if cursor.fetchone():
+        active_model = cursor.fetchone()
+        if active_model:
+            model_name = str(active_model.get("name") or "").lower()
+            algorithm = str(active_model.get("algorithm") or "").strip().lower()
+            # Keep metadata aligned with the deployed artifact bundle when the active model is meta-learner.
+            if "meta" in model_name and algorithm != "meta_learner":
+                cursor.execute(
+                    """
+                    UPDATE model_registry
+                    SET algorithm = %s,
+                        use_case = COALESCE(NULLIF(use_case, ''), %s)
+                    WHERE id = %s
+                    """,
+                    ("meta_learner", "cardiovascular_disease_risk", active_model["id"]),
+                )
+                db.commit()
             return
 
         cursor.execute("SELECT id FROM model_registry ORDER BY created_at DESC LIMIT 1")
@@ -1605,9 +1626,11 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
     ]
 
     algorithm = str(model_info.get("algorithm") or "").lower()
+    model_name = str(model_info.get("model_name") or "").lower()
+    use_meta_pipeline = algorithm == "meta_learner" or ("meta" in model_name and PREPROCESSOR_PATH.exists())
     probability: float
 
-    if algorithm == "meta_learner":
+    if use_meta_pipeline:
         try:
             bundle = load_meta_bundle()
         except RuntimeError as error:
