@@ -67,8 +67,8 @@ META_MODEL_PATH = MODEL_DIR / "meta_learner.joblib"
 METRICS_PATH = MODEL_DIR / "metrics_ml.json"
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "480"))
 PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "600000"))
-LOW_RISK_MAX_PROBABILITY = float(os.getenv("LOW_RISK_MAX_PROBABILITY", "0.15"))
-MEDIUM_RISK_MAX_PROBABILITY = float(os.getenv("MEDIUM_RISK_MAX_PROBABILITY", "0.30"))
+LOW_RISK_MAX_PROBABILITY = float(os.getenv("LOW_RISK_MAX_PROBABILITY", "0.30"))
+MEDIUM_RISK_MAX_PROBABILITY = float(os.getenv("MEDIUM_RISK_MAX_PROBABILITY", "0.70"))
 
 
 raw_origins = os.getenv("CORS_ORIGINS", "https://cvd-pi.vercel.app")
@@ -1676,36 +1676,26 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
         probability = float(model.predict_proba(df[feature_cols])[0][1])
 
     with db.cursor() as cursor:
-        def select_cds_rule(score: float) -> Optional[Dict[str, Any]]:
-            cursor.execute(
-                """
-                SELECT risk_level, recommendation
-                FROM cds_rules
-                WHERE active = TRUE
-                  AND min_probability <= %s
-                  AND max_probability >= %s
-                ORDER BY (max_probability - min_probability) ASC, priority DESC
-                LIMIT 1
-                """,
-                (score, score),
-            )
-            return cursor.fetchone()
+        # Risk level is determined by app thresholds first to keep classification
+        # consistent across environments even when CDS rule ranges drift.
+        fallback = fallback_risk_classification(probability)
+        risk_level = fallback["risk_level"]
+        recommendation = fallback["recommendation"]
 
-        cds_rule = select_cds_rule(probability)
-        if not cds_rule:
-            cursor.execute("SELECT COALESCE(MAX(max_probability), 0) AS max_probability FROM cds_rules WHERE active = TRUE")
-            max_probability = float(cursor.fetchone()["max_probability"] or 0)
-            # Backward compatibility with deployments that stored rule ranges as percentages (0-100).
-            if max_probability > 1.0:
-                cds_rule = select_cds_rule(probability * 100.0)
-
-        if cds_rule:
-            risk_level = cds_rule["risk_level"]
+        cursor.execute(
+            """
+            SELECT recommendation
+            FROM cds_rules
+            WHERE active = TRUE
+              AND lower(risk_level) = %s
+            ORDER BY priority DESC, created_at DESC
+            LIMIT 1
+            """,
+            (risk_level,),
+        )
+        cds_rule = cursor.fetchone()
+        if cds_rule and cds_rule.get("recommendation"):
             recommendation = cds_rule["recommendation"]
-        else:
-            fallback = fallback_risk_classification(probability)
-            risk_level = fallback["risk_level"]
-            recommendation = fallback["recommendation"]
 
         cursor.execute(
             """
