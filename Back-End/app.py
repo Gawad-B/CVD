@@ -651,6 +651,11 @@ def load_meta_bundle() -> Dict[str, Any]:
     }
 
 
+def meta_bundle_available() -> bool:
+    required_paths = [PREPROCESSOR_PATH, META_MODEL_PATH, *BASE_MODEL_PATHS.values()]
+    return all(path.exists() for path in required_paths)
+
+
 def create_cvd_features(df: Any) -> Any:
     if pd is None or np is None:
         return df
@@ -1627,8 +1632,19 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
 
     algorithm = str(model_info.get("algorithm") or "").lower()
     model_name = str(model_info.get("model_name") or "").lower()
-    use_meta_pipeline = algorithm == "meta_learner" or ("meta" in model_name and PREPROCESSOR_PATH.exists())
+    is_meta_configured = algorithm == "meta_learner" or "meta" in model_name
+    meta_bundle_ready = meta_bundle_available()
+    use_meta_pipeline = meta_bundle_ready
     probability: float
+
+    if is_meta_configured and not meta_bundle_ready:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Active model is configured as meta learner, but required artifacts are missing. "
+                "Deploy Back-End/model/preprocessor_ml.joblib, meta_learner.joblib, and all base model files."
+            ),
+        )
 
     if use_meta_pipeline:
         try:
