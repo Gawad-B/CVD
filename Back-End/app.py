@@ -733,11 +733,11 @@ def latest_feature_map(db: Any, patient_id: int) -> Dict[str, Any]:
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT ef.feature_name, ef.feature_value
-            FROM encounter_features ef
-            JOIN encounters e ON e.id = ef.encounter_id
-            WHERE e.patient_id = %s
-            ORDER BY e.encounter_date DESC, ef.created_at DESC
+            SELECT afv.feature_name, afv.feature_value
+            FROM assessment_features_values afv
+            JOIN risk_assessments ra ON ra.id = afv.assessments_id
+            WHERE ra.patient_id = %s
+            ORDER BY ra.created_date DESC, afv.created_at DESC
             """,
             (patient_id,),
         )
@@ -1221,7 +1221,7 @@ def get_patient_encounters(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
