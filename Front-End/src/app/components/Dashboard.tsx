@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Users, FileText, AlertTriangle, TrendingUp } from 'lucide-react';
 import { Link } from 'react-router';
-import { getDashboardStats, getModels, getPatients, getRiskAssessments } from '../api/client';
-import type { Model, Patient, RiskAssessment } from '../api/types';
+import { getDashboardStats, getModels} from '../api/client';
+import type { DashboardStats, Model} from '../api/types';
 import { useAuth } from '../context/AuthContext';
 import { MODELS_ROLES, hasRoleAccess } from '../auth/permissions';
 
 export function Dashboard() {
-  const { user } = useAuth();
-  const [patients, setPatients] = useState<Patient[]>([]);
-  const [assessments, setAssessments] = useState<RiskAssessment[]>([]);
+  const {user} = useAuth();
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [activeModelAccuracy, setActiveModelAccuracy] = useState(0);
   const canViewModels = hasRoleAccess(user?.role, MODELS_ROLES);
@@ -18,27 +17,21 @@ export function Dashboard() {
     let isMounted = true;
 
     Promise.all([
-      getPatients(),
-      getRiskAssessments(),
       getDashboardStats(),
       canViewModels ? getModels() : Promise.resolve<Model[]>([]),
     ])
-      .then(([loadedPatients, loadedAssessments, dashboardStats, loadedModels]) => {
+      .then(([stats, loadedModels]) => {
         if (!isMounted) {
           return;
         }
-        setPatients(loadedPatients);
-        setAssessments(loadedAssessments);
-        setActiveModelAccuracy(dashboardStats.activeModelAccuracy);
+        setDashboardStats(stats);
         setModels(loadedModels);
       })
       .catch(() => {
         if (!isMounted) {
           return;
         }
-        setPatients([]);
-        setAssessments([]);
-        setActiveModelAccuracy(0);
+        setDashboardStats(null);
         setModels([]);
       });
 
@@ -47,24 +40,27 @@ export function Dashboard() {
     };
   }, [canViewModels]);
 
-  const highRiskCount = useMemo(() => assessments.filter(a => a.riskLevel === 'high').length, [assessments]);
-  const mediumRiskCount = useMemo(() => assessments.filter(a => a.riskLevel === 'medium').length, [assessments]);
-  const lowRiskCount = useMemo(() => assessments.filter(a => a.riskLevel === 'low').length, [assessments]);
+  const totalPatients = dashboardStats?.totalPatients ?? 0;
+  const totalAssessments = dashboardStats?.totalAssessments ?? 0;
+  const distribution = dashboardStats?.riskDistribution ?? {};
+  const highRiskCount = distribution.high ?? 0;
+  const mediumRiskCount = distribution.medium ?? 0;
+  const lowRiskCount = distribution.low ?? 0;
+  const assessmentCount = Math.max(totalAssessments, 1); // Avoid division by zero
+  const recentAssessments = dashboardStats?.recentAssessments ?? [];
   const activeModel = models.find(m => m.isActive);
-  const recentAssessments = assessments.slice(0, 5);
-  const assessmentCount = assessments.length || 1;
 
   const stats = [
     {
       name: 'Total Patients',
-      value: patients.length,
+      value: totalPatients,
       icon: Users,
       color: 'bg-blue-500',
       link: '/patients'
     },
     {
       name: 'Total Assessments',
-      value: assessments.length,
+      value: totalAssessments,
       icon: FileText,
       color: 'bg-green-500',
       link: '/assessments'
@@ -170,11 +166,11 @@ export function Dashboard() {
           <div className="space-y-3">
             {recentAssessments.map((assessment) => (
               <div
-                key={assessment.assessmentId}
+                key={assessment.id}
                 className="flex items-center justify-between p-3 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
               >
                 <div className="flex-1">
-                  <p className="text-sm">{assessment.patientName}</p>
+                  <p className="text-sm">{assessment.patientId}</p>
                   <p className="text-xs text-gray-600">
                     {new Date(assessment.createdAt).toLocaleDateString()}
                   </p>
