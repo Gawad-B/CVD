@@ -262,7 +262,18 @@ export async function getUsers(): Promise<User[]> {
 export async function getDashboardStats(): Promise<DashboardStats> {
   const data = await fetchJson<any>("/api/dashboard/stats");
   return {
+    totalPatients: Number(data.totalPatients ?? data.total_patients ?? 0),
+    totalAssessments: Number(data.totalAssessments ?? data.total_assessments ?? 0),
+    riskDistribution: data.riskDistribution ?? data.risk_distribution ?? {},
     activeModelAccuracy: Number(data.activeModelAccuracy ?? data.active_model_accuracy ?? 0),
+    recentAssessments: (data.recentAssessments ?? data.recent_assessments ?? []).map((row: any) => ({
+      id: Number(row.id ?? 0),
+      patientId: Number(row.patient_id ?? row.patientId ?? 0),
+      probabilityCvd: Number(row.probability_cvd ?? row.probabilityCvd ?? 0),
+      riskLevel: (row.risk_level ?? row.riskLevel ?? "low"),
+      createdAt: String(row.created_at ?? row.createdAt ?? ""),
+      externalPatientCode: String(row.external_patient_code ?? row.externalPatientCode ?? ""),
+    })),
   };
 }
 

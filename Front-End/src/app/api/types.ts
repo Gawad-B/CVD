@@ -149,5 +149,16 @@ export interface RiskAssessmentResponse {
 }
 
 export interface DashboardStats {
+  totalPatients: number;
+  totalAssessments: number;
+  riskDistribution: Record<string, number>;
   activeModelAccuracy: number;
+  recentAssessments: Array<{
+    id: number;
+    patientId: number;
+    probabilityCvd: number;
+    riskLevel: "low" | "medium" | "high";
+    createdAt: string;
+    externalPatientCode: string;
+  }>;
 }
