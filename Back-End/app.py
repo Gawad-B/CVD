@@ -737,7 +737,7 @@ def latest_feature_map(db: Any, patient_id: int) -> Dict[str, Any]:
             FROM assessment_features_values afv
             JOIN risk_assessments ra ON ra.id = afv.assessments_id
             WHERE ra.patient_id = %s
-            ORDER BY ra.created_date DESC, afv.created_at DESC
+            ORDER BY ra.created_at DESC, afv.created_at DESC
             """,
             (patient_id,),
         )
@@ -1477,9 +1477,9 @@ def get_risk_assessment(
         cursor.execute(
             """
             SELECT ra.id AS assessment_id, ra.patient_id, ra.encounter_id, ra.model_id,
-                   ra.probability AS probability_cvd, ra.risk_level, ra.assessment_status, ra.review_status,
-                   ra.recommendation AS recommendation_text, ra.notes, ra.created_at,
-                   p.external_patient_code, m.name AS model_name, m.version AS model_version
+                    ra.probability AS probability_cvd, ra.risk_level, ra.assessment_status, ra.review_status,
+                    ra.recommendation AS recommendation_text, ra.notes, ra.created_at,
+                    p.external_patient_code, m.name AS model_name, m.version AS model_version
             FROM risk_assessments ra
             JOIN patients p ON p.id = ra.patient_id
             LEFT JOIN model_registry m ON m.id = ra.model_id
