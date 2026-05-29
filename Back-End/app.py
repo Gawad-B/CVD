@@ -734,8 +734,8 @@ def latest_feature_map(db: Any, patient_id: int) -> Dict[str, Any]:
         cursor.execute(
             """
             SELECT afv.feature_name, afv.feature_value
-            FROM assessment_features_values afv
-            JOIN risk_assessments ra ON ra.id = afv.assessments_id
+            FROM assessment_feature_values afv
+            JOIN risk_assessments ra ON ra.id = afv.assessment_id
             WHERE ra.patient_id = %s
             ORDER BY ra.created_at DESC, afv.created_at DESC
             """,
