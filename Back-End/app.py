@@ -1426,7 +1426,7 @@ def get_risk_assessments(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1472,7 +1472,7 @@ def get_risk_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
     with db.cursor() as cursor:
         cursor.execute(
             """
