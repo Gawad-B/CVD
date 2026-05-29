@@ -10,7 +10,7 @@ export function Dashboard() {
   const {user} = useAuth();
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [models, setModels] = useState<Model[]>([]);
-  const [activeModelAccuracy, setActiveModelAccuracy] = useState(0);
+  const [activeModelAccuracy] = useState(0);
   const canViewModels = hasRoleAccess(user?.role, MODELS_ROLES);
 
   useEffect(() => {
@@ -49,6 +49,7 @@ export function Dashboard() {
   const assessmentCount = Math.max(totalAssessments, 1); // Avoid division by zero
   const recentAssessments = dashboardStats?.recentAssessments ?? [];
   const activeModel = models.find(m => m.isActive);
+  const modelAccuracy = dashboardStats?.activeModelAccuracy ?? 0;
 
   const stats = [
     {
@@ -74,7 +75,7 @@ export function Dashboard() {
     },
     {
       name: 'Active Model Accuracy',
-      value: `${(activeModelAccuracy * 100).toFixed(1)}%`,
+      value: `${(modelAccuracy * 100).toFixed(1)}%`,
       icon: TrendingUp,
       color: 'bg-purple-500',
       link: canViewModels ? '/models' : '/'
@@ -170,7 +171,7 @@ export function Dashboard() {
                 className="flex items-center justify-between p-3 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
               >
                 <div className="flex-1">
-                  <p className="text-sm">{assessment.patientId}</p>
+                  <p className="text-sm">{assessment.externalPatientCode}</p>
                   <p className="text-xs text-gray-600">
                     {new Date(assessment.createdAt).toLocaleDateString()}
                   </p>
