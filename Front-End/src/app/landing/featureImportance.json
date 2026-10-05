@@ -1,0 +1,22 @@
+[
+  {
+    "label": "Age",
+    "value": 100
+  },
+  {
+    "label": "Total cholesterol",
+    "value": 51
+  },
+  {
+    "label": "High blood pressure",
+    "value": 44
+  },
+  {
+    "label": "On BP medication",
+    "value": 43
+  },
+  {
+    "label": "Waist (cm)",
+    "value": 39
+  }
+]

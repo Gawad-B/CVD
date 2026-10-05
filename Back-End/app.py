@@ -1,10 +1,12 @@
 import hashlib
+import logging
 import hmac
+import ipaddress
 import json
-import math
 import os
 import secrets
-from datetime import datetime, timedelta
+import sys
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
@@ -12,76 +14,68 @@ import psycopg2
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator, model_validator
+from psycopg2 import Binary
 from psycopg2.extras import Json, RealDictCursor
 
-try:
-    import joblib
-except ImportError:  # pragma: no cover - runtime fallback for env incompatibilities
-    joblib = None
-
-try:
-    import numpy as np
-except ImportError:  # pragma: no cover - runtime fallback for env incompatibilities
-    np = None
-
-try:
-    import pandas as pd
-except ImportError:  # pragma: no cover - runtime fallback for env incompatibilities
-    pd = None
-
 BASE_DIR = Path(__file__).resolve().parent
+# ml.inference unpickles the pipeline, which imports ml.features: Back-End/ must be importable.
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from db_url import app_database_url  # noqa: E402
+from ml import explain as explain_module  # noqa: E402
+from ml import inference  # noqa: E402
+from ml.features import RAW_NUMERIC_COLUMNS  # noqa: E402
+from phi_crypto import PhiDecryptionError, decrypt_text, encrypt_text, load_key, phi_aad  # noqa: E402
+import clinical  # noqa: E402
+import demo as demo_module  # noqa: E402
+from scoping import patient_scope_sql  # noqa: E402
+
 load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 
 
-def resolve_database_url() -> Optional[str]:
-    database_url = os.getenv("DATABASE_URL")
-    if database_url:
-        return database_url
+DATABASE_URL = app_database_url()
 
-    pg_host = os.getenv("PGHOST")
-    pg_port = os.getenv("PGPORT")
-    pg_db = os.getenv("PGDATABASE")
-    pg_user = os.getenv("PGUSER")
-    pg_password = os.getenv("PGPASSWORD")
+PATIENT_DATA_KEY = load_key()  # RuntimeError at import if missing/short; never sent to the DB
 
-    if all([pg_host, pg_port, pg_db, pg_user, pg_password]):
-        return f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}"
-
-    return None
-
-
-DATABASE_URL = resolve_database_url()
-
-MODEL_PATH = os.getenv("MODEL_PATH") or str(BASE_DIR / "model" / "meta_learner.joblib")
-MODEL_DIR = Path(os.getenv("MODEL_DIR") or (BASE_DIR / "model"))
-PREPROCESSOR_PATH = MODEL_DIR / "preprocessor_ml.joblib"
-BASE_MODEL_PATHS = {
-    "xgb": MODEL_DIR / "model_xgb.joblib",
-    "lgbm": MODEL_DIR / "model_lgbm.joblib",
-    "rf": MODEL_DIR / "model_rf.joblib",
-    "lr": MODEL_DIR / "model_lr.joblib",
-}
-META_MODEL_PATH = MODEL_DIR / "meta_learner.joblib"
-METRICS_PATH = MODEL_DIR / "metrics_ml.json"
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "480"))
+MIN_PASSWORD_LENGTH = 12
+LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
 PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "600000"))
 LOW_RISK_MAX_PROBABILITY = float(os.getenv("LOW_RISK_MAX_PROBABILITY", "0.30"))
 MEDIUM_RISK_MAX_PROBABILITY = float(os.getenv("MEDIUM_RISK_MAX_PROBABILITY", "0.70"))
 
 
-raw_origins = os.getenv("CORS_ORIGINS", "https://cvd-pi.vercel.app")
-cors_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+def cors_settings() -> Dict[str, Any]:
+    """CORSMiddleware kwargs from env.
 
-app = FastAPI(title="Cardiology Screening API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    CORS_ORIGINS: comma-separated exact origins (empty by default: fail closed).
+    CORS_ORIGIN_REGEX: optional regex (full match) for e.g. Vercel preview URLs.
+    """
+    raw_origins = os.getenv("CORS_ORIGINS", "")
+    return {
+        "allow_origins": [o.strip() for o in raw_origins.split(",") if o.strip()],
+        "allow_origin_regex": os.getenv("CORS_ORIGIN_REGEX") or None,
+        # Auth is a Bearer header; the client never sends cookies/credentials.
+        "allow_credentials": False,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+
+
+def build_app() -> FastAPI:
+    """Create the FastAPI app; interactive docs/schema are disabled on Vercel."""
+    kwargs: Dict[str, Any] = {"title": "Cardiology Screening API"}
+    if os.getenv("VERCEL"):
+        kwargs.update(docs_url=None, redoc_url=None, openapi_url=None)
+    return FastAPI(**kwargs)
+
+
+app = build_app()
+app.add_middleware(CORSMiddleware, **cors_settings())
 
 
 @app.middleware("http")
@@ -131,55 +125,96 @@ class CreateEncounterRequest(BaseModel):
     features: List[EncounterFeatureIn] = []
 
 
+VALID_RACE_CODES = {1, 2, 3, 4, 6, 7}
+
+
 class RiskAssessmentRequest(BaseModel):
     patientId: int
     notes: Optional[str] = ""
-    age: Optional[float] = None
-    bmi: Optional[float] = None
-    sbp: Optional[float] = None
-    dbp: Optional[float] = None
-    hdl: Optional[float] = None
-    ldl: Optional[float] = None
-    total_cholesterol: Optional[float] = None
-    triglycerides: Optional[float] = None
-    fasting_glucose: Optional[float] = None
-    hba1c: Optional[float] = None
+    age: Optional[float] = Field(default=None, ge=18, le=120)
+    bmi: Optional[float] = Field(default=None, ge=10, le=80)
+    sbp: Optional[float] = Field(default=None, ge=60, le=260)
+    dbp: Optional[float] = Field(default=None, ge=30, le=160)
+    hdl: Optional[float] = Field(default=None, ge=10, le=150)
+    ldl: Optional[float] = Field(default=None, ge=10, le=400)
+    total_cholesterol: Optional[float] = Field(default=None, ge=70, le=500)
+    triglycerides: Optional[float] = Field(default=None, ge=20, le=3000)
+    fasting_glucose: Optional[float] = Field(default=None, ge=40, le=600)
+    hba1c: Optional[float] = Field(default=None, ge=3, le=20)
     smoker: Optional[str] = None
-    drink_count: Optional[float] = None
+    drink_count: Optional[float] = Field(default=None, ge=0, le=100)
     physically_active: Optional[str] = None
-    sleep_hours: Optional[float] = None
-    waist: Optional[float] = None
-    crp: Optional[float] = None
-    systolicBp: Optional[float] = None
-    diastolicBp: Optional[float] = None
-    totalCholesterol: Optional[float] = None
+    sleep_hours: Optional[float] = Field(default=None, ge=0, le=24)
+    waist: Optional[float] = Field(default=None, ge=40, le=200)
+    crp: Optional[float] = Field(default=None, ge=0, le=300)
+    systolicBp: Optional[float] = Field(default=None, ge=60, le=260)
+    diastolicBp: Optional[float] = Field(default=None, ge=30, le=160)
+    totalCholesterol: Optional[float] = Field(default=None, ge=70, le=500)
     diabetic: Optional[str] = None
     race: Optional[float] = None
-    education: Optional[float] = None
-    incomeRatio: Optional[float] = None
-    waistCm: Optional[float] = None
-    hba1cPercent: Optional[float] = None
-    hsCrp: Optional[float] = None
-    sodium: Optional[float] = None
-    wbc: Optional[float] = None
-    hemoglobin: Optional[float] = None
-    platelets: Optional[float] = None
-    rdw: Optional[float] = None
-    vigorousActivityMinutes: Optional[float] = None
-    moderateActivityMinutes: Optional[float] = None
-    moderateActivityUnit: Optional[float] = None
-    sedentaryMinutes: Optional[float] = None
-    sedentaryMinutesAlt: Optional[float] = None
-    sleepHoursWeekday: Optional[float] = None
-    sleepHoursWeekend: Optional[float] = None
+    education: Optional[float] = Field(default=None, ge=1, le=5)
+    incomeRatio: Optional[float] = Field(default=None, ge=0, le=5)
+    waistCm: Optional[float] = Field(default=None, ge=40, le=200)
+    hba1cPercent: Optional[float] = Field(default=None, ge=3, le=20)
+    hsCrp: Optional[float] = Field(default=None, ge=0, le=300)
+    sodium: Optional[float] = Field(default=None, ge=110, le=170)
+    wbc: Optional[float] = Field(default=None, ge=1, le=50)
+    hemoglobin: Optional[float] = Field(default=None, ge=5, le=22)
+    platelets: Optional[float] = Field(default=None, ge=20, le=1500)
+    rdw: Optional[float] = Field(default=None, ge=8, le=30)
+    vigorousActivityMinutes: Optional[float] = Field(default=None, ge=0, le=50)  # PAD810Q: vigorous sessions per unit
+    moderateActivityMinutes: Optional[float] = Field(default=None, ge=0, le=50)  # PAD790Q: moderate sessions per unit
+    moderateActivityUnit: Optional[float] = Field(default=None, ge=1, le=4)
+    sedentaryMinutes: Optional[float] = Field(default=None, ge=0, le=600)  # PAD800: moderate minutes per session
+    sedentaryMinutesAlt: Optional[float] = Field(default=None, ge=0, le=1440)
+    sleepHoursWeekday: Optional[float] = Field(default=None, ge=0, le=24)
+    sleepHoursWeekend: Optional[float] = Field(default=None, ge=0, le=24)
     highBp: Optional[str] = None
     highChol: Optional[str] = None
     bpMed: Optional[str] = None
     cholMed: Optional[str] = None
+    heartRate: Optional[int] = Field(default=None, ge=30, le=220)  # stored with the assessment, never a model input
+
+    @field_validator("race")
+    @classmethod
+    def _check_race(cls, value: Optional[float]) -> Optional[float]:
+        if value is not None and value not in VALID_RACE_CODES:
+            raise ValueError("race must be one of 1, 2, 3, 4, 6, 7")
+        return value
+
+    @field_validator("education", "moderateActivityUnit")
+    @classmethod
+    def _check_integer_code(cls, value: Optional[float]) -> Optional[float]:
+        if value is not None and value != int(value):
+            raise ValueError("must be a whole number")
+        return value
+
+    @field_validator("smoker", "physically_active", "highBp", "highChol", "bpMed", "cholMed")
+    @classmethod
+    def _check_yes_no(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value.strip().lower() not in {"yes", "no"}:
+            raise ValueError("must be 'yes' or 'no'")
+        return value
+
+    @field_validator("diabetic")
+    @classmethod
+    def _check_diabetic(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value.strip().lower() not in {"yes", "no", "borderline"}:
+            raise ValueError("must be 'yes', 'no' or 'borderline'")
+        return value
+
+    @model_validator(mode="after")
+    def _check_bp_order(self) -> "RiskAssessmentRequest":
+        sbp = self.sbp if self.sbp is not None else self.systolicBp
+        dbp = self.dbp if self.dbp is not None else self.diastolicBp
+        if sbp is not None and dbp is not None and sbp <= dbp:
+            raise ValueError("Systolic BP must be greater than diastolic BP")
+        return self
 
 
 class ReviewStatusRequest(BaseModel):
     reviewStatus: str
+    reviewComment: Optional[str] = Field(default=None, max_length=2000)
 
 
 class CreateUserRequest(BaseModel):
@@ -209,15 +244,155 @@ def get_db() -> Generator[Any, None, None]:
     except psycopg2.Error as error:
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Database connection failed. Set DATABASE_URL in Back-End/.env or export DATABASE_URL, "
-                "or configure PGHOST, PGPORT, PGDATABASE, PGUSER, and PGPASSWORD."
-            ),
+            detail="Database unavailable",
         ) from error
     try:
         yield conn
     finally:
         conn.close()
+
+
+# --- Patient identifier encryption (application layer, AES-256-GCM) ---------
+# patient_sensitive_data stores each identifier encrypted in <field>_enc (BYTEA,
+# see phi_crypto.py). The key never leaves the app process: SQL only ever sees
+# ciphertext. Plaintext columns only hold not-yet-migrated legacy rows
+# (see scripts/encrypt_patient_data.py).
+PSD_FIELDS = ("first_name", "last_name", "date_of_birth", "phone", "email")
+
+
+def psd_columns(alias: str = "psd") -> str:
+    """Select-list fragment: ciphertext and legacy plaintext for every identifier."""
+    return ", ".join(f"{alias}.{f} AS {f}, {alias}.{f}_enc AS {f}_enc" for f in PSD_FIELDS)
+
+
+def psd_decrypt(row: Optional[Dict[str, Any]], patient_id: Optional[int] = None) -> Dict[str, Any]:
+    """Decrypt identifiers from a row selected with psd_columns(); legacy plaintext as fallback.
+
+    The ciphertext is bound to the patient id and column (AAD); the id is taken from
+    the row's `patient_id` unless given.
+    """
+    row = row or {}
+    pid = patient_id if patient_id is not None else row.get("patient_id")
+    out: Dict[str, Any] = {}
+    for field in PSD_FIELDS:
+        blob = row.get(f"{field}_enc")
+        value = decrypt_text(blob, PATIENT_DATA_KEY, aad=phi_aad(pid, field)) if blob is not None else row.get(field)
+        if field == "date_of_birth" and isinstance(value, str):
+            value = date.fromisoformat(value)
+        out[field] = value
+    return out
+
+
+def psd_encrypt_value(patient_id: int, field: str, value: Any) -> Optional[Any]:
+    """Ciphertext as psycopg2.Binary (or None) for one identifier; dates stored as YYYY-MM-DD."""
+    if value is None:
+        return None
+    text = value.isoformat() if field == "date_of_birth" else value
+    return Binary(encrypt_text(text, PATIENT_DATA_KEY, aad=phi_aad(patient_id, field)))
+
+
+_PATIENT_KEY_VERIFIED = False
+_KEY_MISMATCH_DETAIL = "Patient data key does not match stored data"
+
+
+def require_patient_key(db: Any) -> None:
+    """Refuse (503) to touch patient identifiers if PATIENT_DATA_KEY cannot decrypt stored data.
+
+    Decrypts one existing *_enc value on first use and caches the successful result
+    per process. With no encrypted data yet there is nothing to contradict, so the
+    key is accepted (and re-checked on later requests until data exists).
+    """
+    global _PATIENT_KEY_VERIFIED
+    if _PATIENT_KEY_VERIFIED:
+        return
+    cols = ", ".join(f"{f}_enc" for f in PSD_FIELDS)
+    any_enc = " OR ".join(f"{f}_enc IS NOT NULL" for f in PSD_FIELDS)
+    with db.cursor() as cursor:
+        cursor.execute(f"SELECT patient_id, {cols} FROM patient_sensitive_data WHERE {any_enc} ORDER BY patient_id LIMIT 1")
+        row = cursor.fetchone()
+    if not row:
+        return
+    for field in PSD_FIELDS:
+        blob = row[f"{field}_enc"]
+        if blob is not None:
+            try:
+                decrypt_text(blob, PATIENT_DATA_KEY, aad=phi_aad(row["patient_id"], field))
+            except PhiDecryptionError:
+                logging.getLogger(__name__).error("PATIENT_DATA_KEY does not decrypt stored patient data")
+                raise HTTPException(status_code=503, detail=_KEY_MISMATCH_DETAIL) from None
+            break
+    _PATIENT_KEY_VERIFIED = True
+
+
+def insert_patient(
+    cursor: Any,
+    *,
+    first_name: str,
+    last_name: str,
+    date_of_birth: Optional[date] = None,
+    sex: Optional[str] = None,
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+    external_patient_code: Optional[str] = None,
+    owner_user_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Insert a patient with encrypted identifiers; owner_user_id marks demo-sandbox data."""
+    cursor.execute(
+        """
+        INSERT INTO patients (external_patient_code, sex, owner_user_id)
+        VALUES (%s, %s, %s)
+        RETURNING id AS patient_id, external_patient_code, sex, created_at
+        """,
+        (external_patient_code, sex, owner_user_id),
+    )
+    patient = cursor.fetchone()
+    pid = patient["patient_id"]
+    cursor.execute(
+        """
+        INSERT INTO patient_sensitive_data (
+            patient_id, first_name_enc, last_name_enc, date_of_birth_enc, phone_enc, email_enc
+        )
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            pid,
+            psd_encrypt_value(pid, "first_name", first_name),
+            psd_encrypt_value(pid, "last_name", last_name),
+            psd_encrypt_value(pid, "date_of_birth", date_of_birth),
+            psd_encrypt_value(pid, "phone", phone),
+            psd_encrypt_value(pid, "email", email),
+        ),
+    )
+    return patient
+
+
+def patient_display_name(first_name: Optional[str], last_name: Optional[str], external_code: Optional[str], patient_id: Any) -> str:
+    name = " ".join(part for part in (first_name, last_name) if part is not None).strip()
+    return name or external_code or f"Patient {patient_id}"
+
+
+def _assessment_patient_name(row: Dict[str, Any]) -> str:
+    names = psd_decrypt(row)
+    return patient_display_name(names["first_name"], names["last_name"], row["external_patient_code"], row["patient_id"])
+
+
+def _assessment_patient_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Minimal patient context for the dashboard: code, sex, age. Never DOB, phone or email."""
+    return {
+        "external_patient_code": row["external_patient_code"] or "",
+        "patient_sex": row.get("patient_sex"),
+        "patient_age": calculate_age_years(psd_decrypt(row).get("date_of_birth")),
+    }
+
+
+def parse_date_of_birth(value: Optional[str]) -> Optional[date]:
+    """Validate an ISO date string (stored encrypted as text, so the DB cannot)."""
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        raise HTTPException(status_code=422, detail="dateOfBirth must be a valid YYYY-MM-DD date")
 
 
 def to_iso(value: Any) -> Any:
@@ -234,7 +409,7 @@ def calculate_age_years(value: Any) -> Optional[int]:
     else:
         dob = value
     try:
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
     except Exception:
         return None
@@ -295,51 +470,35 @@ def bearer_token(authorization: Optional[str]) -> str:
     return authorization.replace("Bearer ", "", 1).strip()
 
 
-def optional_session_user_id(db: Any, authorization: Optional[str]) -> Optional[int]:
-    if not authorization or not authorization.startswith("Bearer "):
-        return None
-    token = authorization.replace("Bearer ", "", 1).strip()
-    if not token:
-        return None
-    token_hash = hash_session_token(token)
-    with db.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT user_id
-            FROM sessions
-            WHERE (token = %s OR token = %s) AND expires_at > NOW()
-            LIMIT 1
-            """,
-            (token_hash, token),
-        )
-        row = cursor.fetchone()
-    return int(row["user_id"]) if row else None
-
-
 def get_authenticated_user(db: Any, authorization: Optional[str]) -> Dict[str, Any]:
     token = bearer_token(authorization)
     token_hash = hash_session_token(token)
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT u.id, u.username, u.email, u.role
+            SELECT u.id, u.username, u.email, u.role, u.is_demo, u.demo_expires_at,
+                   (u.is_demo AND u.demo_expires_at IS NOT NULL AND u.demo_expires_at <= NOW()) AS demo_expired
             FROM sessions s
             JOIN users u ON u.id = s.user_id
-            WHERE (s.token = %s OR s.token = %s)
+            WHERE s.token = %s
               AND s.expires_at > NOW()
               AND u.is_active = TRUE
             LIMIT 1
             """,
-            (token_hash, token),
+            (token_hash,),
         )
         user = cursor.fetchone()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
+    if user["demo_expired"]:
+        raise demo_module.expired_error()
     return {
         "id": int(user["id"]),
         "username": user["username"],
         "email": user["email"],
         "role": user["role"],
+        "is_demo": bool(user["is_demo"]),
+        "demo_expires_at": to_iso(user["demo_expires_at"]) if user["is_demo"] else None,
     }
 
 
@@ -369,12 +528,36 @@ def authorize_user(
             endpoint=str(request.url.path),
             method=request.method,
             outcome="denied",
-            ip_address=request.client.host if request.client else None,
+            ip_address=client_ip(request),
             user_id=user["id"],
         )
         db.commit()
 
     raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
+def _valid_ip(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
+def client_ip(request: Optional[Request]) -> Optional[str]:
+    """Return the client IP only when valid (audit_log.ip_address is INET).
+
+    With TRUST_PROXY_HEADERS=true (behind Vercel), the first X-Forwarded-For entry is used
+    when it is a valid IP; otherwise falls back to the socket peer.
+    """
+    if request is None:
+        return None
+    if os.getenv("TRUST_PROXY_HEADERS", "").strip().lower() in {"true", "1", "yes"}:
+        forwarded = _valid_ip((request.headers.get("x-forwarded-for") or "").split(",")[0])
+        if forwarded:
+            return forwarded
+    return _valid_ip(request.client.host if request.client else None)
 
 
 def log_audit_event(
@@ -413,6 +596,43 @@ def log_audit_event(
         )
 
 
+def audit(
+    db: Any,
+    request: Request,
+    user: Dict[str, Any],
+    *,
+    action_type: str,
+    resource_type: str,
+    resource_id: Optional[int] = None,
+    patient_id: Optional[int] = None,
+    outcome: str = "success",
+) -> None:
+    """Write one audit row for this request. Does not commit."""
+    log_audit_event(
+        db,
+        action_type=action_type,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        patient_id=patient_id,
+        endpoint=str(request.url.path),
+        method=request.method,
+        outcome=outcome,
+        ip_address=client_ip(request),
+        user_id=user["id"],
+    )
+
+
+def require_active_patient(db: Any, patient_id: int, user: Dict[str, Any]) -> None:
+    scope_sql, scope_params = patient_scope_sql(user)
+    with db.cursor() as cursor:
+        cursor.execute(
+            f"SELECT 1 FROM patients p WHERE p.id = %s AND p.is_active = TRUE AND {scope_sql}",
+            (patient_id, *scope_params),
+        )
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Patient not found")
+
+
 def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "user_id": user["user_id"],
@@ -423,84 +643,38 @@ def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "is_active": bool(user["is_active"]),
         "last_login_at": to_iso(user["last_login"]),
         "created_at": to_iso(user["created_at"]),
+        "is_demo": bool(user.get("is_demo", False)),
+        "demo_expires_at": to_iso(user.get("demo_expires_at")),
     }
 
 
-def read_default_model_metrics() -> Dict[str, float]:
-    if METRICS_PATH.exists():
-        with METRICS_PATH.open("r", encoding="utf-8") as metrics_file:
-            metrics = json.load(metrics_file)
-        return {
-            "accuracy": float(metrics.get("accuracy") or 0),
-            "auc": float(metrics.get("auc") or 0),
-            "precision_score": float(metrics.get("precision") or 0),
-            "recall_score": float(metrics.get("recall") or 0),
-            "f1_score": float(metrics.get("f1") or 0),
-        }
-    return {
-        "accuracy": 0.0,
-        "auc": 0.0,
-        "precision_score": 0.0,
-        "recall_score": 0.0,
-        "f1_score": 0.0,
-    }
+# Set once the active-model row has been upserted in this process. Tests that drop the
+# schema between cases reset it (see tests/conftest.py).
+_MODEL_REGISTRY_READY = False
 
 
 def ensure_active_model_registry_entry(db: Any) -> None:
+    """Upsert the deployed pipeline as the single active model (at most once per process)."""
+    global _MODEL_REGISTRY_READY
+    if _MODEL_REGISTRY_READY:
+        return
+    schema = inference.get_schema()
+    metrics = inference.get_metrics()
+    name = schema["model_name"]
+    version = schema["model_version"]
     with db.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT id, name, algorithm
-            FROM model_registry
-            WHERE lower(status) = 'active'
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
-        )
-        active_model = cursor.fetchone()
-        if active_model:
-            model_name = str(active_model.get("name") or "").lower()
-            algorithm = str(active_model.get("algorithm") or "").strip().lower()
-            # Keep metadata aligned with the deployed artifact bundle when the active model is meta-learner.
-            if "meta" in model_name and algorithm != "meta_learner":
-                cursor.execute(
-                    """
-                    UPDATE model_registry
-                    SET algorithm = %s,
-                        use_case = COALESCE(NULLIF(use_case, ''), %s)
-                    WHERE id = %s
-                    """,
-                    ("meta_learner", "cardiovascular_disease_risk", active_model["id"]),
-                )
-                db.commit()
-            return
-
-        cursor.execute("SELECT id FROM model_registry ORDER BY created_at DESC LIMIT 1")
-        latest_model = cursor.fetchone()
-        if latest_model:
-            cursor.execute("UPDATE model_registry SET status = 'active' WHERE id = %s", (latest_model["id"],))
-            db.commit()
-            return
-
-        metrics = read_default_model_metrics()
-        validation_metrics = {
-            "source": "bootstrap_metrics_ml",
-            "accuracy": metrics["accuracy"],
-            "auc": metrics["auc"],
-            "precision": metrics["precision_score"],
-            "recall": metrics["recall_score"],
-            "f1": metrics["f1_score"],
-        }
         cursor.execute(
             """
             INSERT INTO model_registry (
                 name, version, status, algorithm, use_case,
-                accuracy, auc, precision_score, recall_score, f1_score, validation_metrics
+                accuracy, auc, precision_score, recall_score, f1_score,
+                training_data_size, validation_metrics
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, 'active', 'stacked_pipeline', 'cardiovascular_disease_risk',
+                    %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (name, version)
             DO UPDATE SET
-                status = EXCLUDED.status,
+                status = 'active',
                 algorithm = EXCLUDED.algorithm,
                 use_case = EXCLUDED.use_case,
                 accuracy = EXCLUDED.accuracy,
@@ -508,23 +682,27 @@ def ensure_active_model_registry_entry(db: Any) -> None:
                 precision_score = EXCLUDED.precision_score,
                 recall_score = EXCLUDED.recall_score,
                 f1_score = EXCLUDED.f1_score,
+                training_data_size = EXCLUDED.training_data_size,
                 validation_metrics = EXCLUDED.validation_metrics
             """,
             (
-                "CVD Meta Learner",
-                "1.0.0",
-                "active",
-                "meta_learner",
-                "cardiovascular_disease_risk",
-                metrics["accuracy"],
-                metrics["auc"],
-                metrics["precision_score"],
-                metrics["recall_score"],
-                metrics["f1_score"],
-                Json(validation_metrics),
+                name,
+                version,
+                metrics.get("accuracy"),
+                metrics.get("auc"),
+                metrics.get("precision"),
+                metrics.get("recall"),
+                metrics.get("f1"),
+                metrics.get("n_train"),
+                Json(metrics),
             ),
         )
+        cursor.execute(
+            "UPDATE model_registry SET status = 'retired' WHERE NOT (name = %s AND version = %s) AND status <> 'retired'",
+            (name, version),
+        )
     db.commit()
+    _MODEL_REGISTRY_READY = True
 
 
 def ensure_cds_rules_seeded(db: Any) -> None:
@@ -586,344 +764,57 @@ def fallback_risk_classification(probability: float) -> Dict[str, str]:
     }
 
 
-def load_ml_model() -> Optional[Any]:
-    if joblib is None:
-        return None
-    if Path(MODEL_PATH).exists():
-        return joblib.load(MODEL_PATH)
-    return None
-
-
-def patch_sklearn_pickle_compat() -> None:
-    # Compatibility shim for models serialized with sklearn 1.6.x and loaded on newer versions.
-    try:
-        from sklearn.compose import _column_transformer as ct  # type: ignore
-    except Exception:
-        return
-    if not hasattr(ct, "_RemainderColsList"):
-        class _RemainderColsList(list):
-            pass
-        ct._RemainderColsList = _RemainderColsList  # type: ignore[attr-defined]
-
-
-def load_meta_bundle() -> Dict[str, Any]:
-    if joblib is None:
-        raise RuntimeError("joblib is required to load ML models")
-    if pd is None or np is None:
-        raise RuntimeError("pandas and numpy are required to run ML models")
-
-    if not PREPROCESSOR_PATH.exists():
-        raise RuntimeError(f"Missing preprocessor: {PREPROCESSOR_PATH}")
-    if not META_MODEL_PATH.exists():
-        raise RuntimeError(f"Missing meta model: {META_MODEL_PATH}")
-
-    patch_sklearn_pickle_compat()
-    try:
-        preprocessor = joblib.load(PREPROCESSOR_PATH)
-    except Exception as error:
-        raise RuntimeError(
-            "Failed to load model preprocessor. Install Back-End requirements in the same Python "
-            "interpreter used to run app.py (scikit-learn==1.6.1), or run with the project virtualenv."
-        ) from error
-    try:
-        meta_model = joblib.load(META_MODEL_PATH)
-    except Exception as error:
-        raise RuntimeError(
-            "Failed to load meta model artifact. Ensure all Back-End requirements are installed in "
-            "the Python interpreter running app.py."
-        ) from error
-    base_models: Dict[str, Any] = {}
-    for key, path in BASE_MODEL_PATHS.items():
-        if not path.exists():
-            raise RuntimeError(f"Missing base model: {path}")
-        try:
-            base_models[key] = joblib.load(path)
-        except Exception as error:
-            raise RuntimeError(
-                f"Failed to load base model '{key}'. Install Back-End requirements in the current "
-                "interpreter (notably xgboost/lightgbm/scikit-learn pinned versions)."
-            ) from error
-
-    return {
-        "preprocessor": preprocessor,
-        "meta": meta_model,
-        "base_models": base_models,
-    }
-
-
-def meta_bundle_available() -> bool:
-    required_paths = [PREPROCESSOR_PATH, META_MODEL_PATH, *BASE_MODEL_PATHS.values()]
-    return all(path.exists() for path in required_paths)
-
-
-def create_cvd_features(df: Any) -> Any:
-    if pd is None or np is None:
-        return df
-    df = df.copy()
-    numeric_cols = [
-        "age",
-        "bmi",
-        "sbp",
-        "dbp",
-        "total_cholesterol",
-        "hdl",
-        "ldl",
-        "triglycerides",
-        "fasting_glucose",
-        "hba1c",
-        "crp",
-        "waist",
-        "sleep_hours",
-        "drink_count",
-    ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-    if "sbp" in df.columns and "dbp" in df.columns:
-        df["pulse_pressure"] = df["sbp"] - df["dbp"]
-    if "total_cholesterol" in df.columns and "hdl" in df.columns:
-        df["tc_hdl_ratio"] = df["total_cholesterol"] / (df["hdl"] + 0.01)
-    if "bmi" in df.columns and "age" in df.columns:
-        df["bmi_age"] = (df["bmi"] * df["age"]) / 100
-    if "waist" in df.columns and "bmi" in df.columns:
-        df["waist_bmi"] = df["waist"] / (df["bmi"] + 0.01)
-    if "sleep_hours" in df.columns:
-        df["sleep_diff"] = abs(df["sleep_hours"] - 7)
-    if "crp" in df.columns:
-        df["log_crp"] = np.log1p(df["crp"].fillna(0))
-    if "hba1c" in df.columns and "age" in df.columns:
-        df["hba1c_age"] = (df["hba1c"] * df["age"]) / 100
-    if "sbp" in df.columns and "age" in df.columns:
-        df["sbp_age"] = df["sbp"] / (df["age"] + 0.01)
-    for col in ["triglycerides", "fasting_glucose", "crp"]:
-        if col in df.columns:
-            df[f"log_{col}"] = np.log1p(df[col].fillna(0))
-    return df
-
-
-def preprocess_for_model(df: Any, feature_cols: List[str]) -> Any:
-    normalized = df.copy()
-    for col in feature_cols:
-        if col in normalized.columns:
-            median_val = normalized[col].median()
-            is_nan = False
-            if median_val is None:
-                is_nan = True
-            elif np is not None:
-                try:
-                    is_nan = bool(np.isnan(median_val))
-                except TypeError:
-                    is_nan = False
-            else:
-                try:
-                    is_nan = math.isnan(float(median_val))
-                except (TypeError, ValueError):
-                    is_nan = False
-
-            fallback = 0 if is_nan else median_val
-            normalized[col] = normalized[col].fillna(fallback)
-        else:
-            normalized[col] = 0
-    return normalized
-
-
-def latest_feature_map(db: Any, patient_id: int) -> Dict[str, Any]:
-    feature_map: Dict[str, Any] = {}
+@app.post("/api/auth/login")
+def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) -> Dict[str, Any]:
+    ip_address = client_ip(request)
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT afv.feature_name, afv.feature_value
-            FROM assessment_feature_values afv
-            JOIN risk_assessments ra ON ra.id = afv.assessment_id
-            WHERE ra.patient_id = %s
-            ORDER BY ra.created_at DESC, afv.created_at DESC
+            SELECT id, username, email, role, password_hash, failed_login_attempts,
+                   is_demo, demo_expires_at,
+                   (locked_until IS NOT NULL AND locked_until > NOW()) AS is_locked,
+                   (is_demo AND demo_expires_at IS NOT NULL AND demo_expires_at <= NOW()) AS demo_expired
+            FROM users
+            WHERE username = %s AND is_active = TRUE
+            FOR UPDATE
             """,
-            (patient_id,),
-        )
-        rows = cursor.fetchall()
-    for row in rows:
-        name = row.get("feature_name")
-        if name and name not in feature_map:
-            feature_map[name] = row.get("feature_value")
-    return feature_map
-
-
-def as_float(value: Any, default: float) -> float:
-    try:
-        if value is None or value == "":
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def yes_no_flag(value: Any, yes_value: int = 1, no_value: int = 2) -> int:
-    return yes_value if str(value or "").strip().lower() in {"yes", "1", "true"} else no_value
-
-
-def diabetic_feature_value(value: Any) -> float:
-    text = str(value or "").strip().lower()
-    if text in {"yes", "1", "true"}:
-        return 1.0
-    if text in {"borderline", "3"}:
-        return 0.5
-    return 0.0
-
-
-def diabetic_nhanes_code(value: Any) -> int:
-    text = str(value or "").strip().lower()
-    if text in {"yes", "1", "true"}:
-        return 1
-    if text in {"borderline", "3", "0.5"}:
-        return 3
-    return 2
-
-
-def build_nhanes_row(input_features: Dict[str, Any]) -> Dict[str, Any]:
-    sex_code = 1 if input_features.get("sex") == 1 else 2
-    return {
-        "RIDAGEYR": as_float(input_features.get("age"), 50),
-        "RIAGENDR": sex_code,
-        "RIDRETH3": as_float(input_features.get("race"), 3),
-        "INDFMPIR": as_float(input_features.get("income_ratio"), 1.0),
-        "DMDEDUC2": as_float(input_features.get("education"), 3),
-        "BMXBMI": as_float(input_features.get("bmi"), 25),
-        "BMXWAIST": as_float(input_features.get("waist"), 90),
-        "BPXOSY1": as_float(input_features.get("sbp"), 120),
-        "BPXODI1": as_float(input_features.get("dbp"), 80),
-        "LBXTC": as_float(input_features.get("total_cholesterol"), 200),
-        "LBDHDD": as_float(input_features.get("hdl"), 50),
-        "LBXGH": as_float(input_features.get("hba1c"), 5.5),
-        "LBXHSCRP": as_float(input_features.get("crp"), 1.0),
-        "LBXSNASI": as_float(input_features.get("sodium"), 0),
-        "LBXWBCSI": as_float(input_features.get("wbc"), 0),
-        "LBXHGB": as_float(input_features.get("hgb"), 0),
-        "LBXPLTSI": as_float(input_features.get("platelets"), 0),
-        "LBXRDW": as_float(input_features.get("rdw"), 0),
-        "PAD810Q": as_float(input_features.get("vigorous_activity"), 0),
-        "PAD790Q": as_float(input_features.get("moderate_activity"), 0),
-        "PAD790U": as_float(input_features.get("moderate_activity_units"), 1),
-        "PAD800": as_float(input_features.get("sedentary_minutes"), 0),
-        "PAD680": as_float(input_features.get("sedentary_minutes_alt"), 0),
-        "SLD012": as_float(input_features.get("sleep_hours"), 7),
-        "SLD013": as_float(input_features.get("sleep_hours_weekend"), as_float(input_features.get("sleep_hours"), 7)),
-        "DIQ010": diabetic_nhanes_code(input_features.get("diabetic")),
-        "BPQ020": yes_no_flag(input_features.get("high_bp")),
-        "BPQ080": yes_no_flag(input_features.get("high_chol")),
-        "BPQ101D": yes_no_flag(input_features.get("bp_med")),
-        "RXQ033": yes_no_flag(input_features.get("chol_med")),
-        "SMQ020": yes_no_flag(input_features.get("smoker")),
-    }
-
-
-def create_nhanes_features(df: Any) -> Any:
-    if pd is None or np is None:
-        return df
-    df = df.copy()
-
-    def _num(column: str) -> Any:
-        return pd.to_numeric(df[column], errors="coerce") if column in df.columns else None
-
-    sbp = _num("BPXOSY1")
-    dbp = _num("BPXODI1")
-    bmi = _num("BMXBMI")
-    age = _num("RIDAGEYR")
-    waist = _num("BMXWAIST")
-    tc = _num("LBXTC")
-    hdl = _num("LBDHDD")
-    hba1c = _num("LBXGH")
-    crp = _num("LBXHSCRP")
-    sleep_wd = _num("SLD012")
-    sleep_we = _num("SLD013")
-
-    if sbp is not None and dbp is not None:
-        df["pulse_pressure"] = sbp - dbp
-    if tc is not None and hdl is not None:
-        hdl_nonzero = hdl.replace(0, np.nan)
-        df["tc_hdl_ratio"] = tc / hdl_nonzero
-    if bmi is not None and age is not None:
-        df["bmi_age"] = (bmi * age) / 100
-    if waist is not None and bmi is not None:
-        bmi_nonzero = bmi.replace(0, np.nan)
-        df["waist_bmi"] = waist / bmi_nonzero
-    if sleep_wd is not None and sleep_we is not None:
-        df["sleep_diff"] = (sleep_wd - sleep_we).abs()
-    if hba1c is not None and age is not None:
-        df["hba1c_age"] = (hba1c * age) / 100
-    if sbp is not None and age is not None:
-        df["sbp_age"] = (sbp * age) / 1000
-    if crp is not None:
-        df["log_crp"] = np.log1p(crp.clip(lower=0))
-
-    return df
-
-
-def build_features(payload: RiskAssessmentRequest, feature_defaults: Dict[str, Any], patient_sex: Optional[str]) -> Dict[str, Any]:
-    sbp_input = payload.sbp if payload.sbp is not None else payload.systolicBp
-    dbp_input = payload.dbp if payload.dbp is not None else payload.diastolicBp
-    chol_input = payload.total_cholesterol if payload.total_cholesterol is not None else payload.totalCholesterol
-    waist_input = payload.waist if payload.waist is not None else payload.waistCm
-    hba1c_input = payload.hba1c if payload.hba1c is not None else payload.hba1cPercent
-    crp_input = payload.crp if payload.crp is not None else payload.hsCrp
-    sleep_weekday_input = payload.sleep_hours if payload.sleep_hours is not None else payload.sleepHoursWeekday
-
-    def first_default(*keys: str) -> Any:
-        for key in keys:
-            value = feature_defaults.get(key)
-            if value not in (None, ""):
-                return value
-        return None
-
-    return {
-        "age": as_float(payload.age, as_float(first_default("age", "RIDAGEYR"), 50)),
-        "sex": 1 if str(patient_sex or "").lower() == "male" else 0,
-        "race": as_float(payload.race, as_float(first_default("race", "RIDRETH3"), 3)),
-        "education": as_float(payload.education, as_float(first_default("education", "DMDEDUC2"), 3)),
-        "income_ratio": as_float(payload.incomeRatio, as_float(first_default("income_ratio", "incomeRatio", "INDFMPIR"), 1.0)),
-        "bmi": as_float(payload.bmi, as_float(first_default("bmi", "BMXBMI"), 25)),
-        "sbp": as_float(sbp_input, as_float(first_default("sbp", "systolicBp", "BPXOSY1"), 120)),
-        "dbp": as_float(dbp_input, as_float(first_default("dbp", "diastolicBp", "BPXODI1"), 80)),
-        "total_cholesterol": as_float(chol_input, as_float(first_default("total_cholesterol", "totalCholesterol", "LBXTC"), 200)),
-        "hdl": as_float(payload.hdl, as_float(first_default("hdl", "LBDHDD"), 50)),
-        "ldl": as_float(payload.ldl, as_float(first_default("ldl"), 100)),
-        "triglycerides": as_float(payload.triglycerides, as_float(first_default("triglycerides"), 150)),
-        "fasting_glucose": as_float(payload.fasting_glucose, as_float(first_default("fasting_glucose"), 100)),
-        "hba1c": as_float(hba1c_input, as_float(first_default("hba1c", "hba1cPercent", "LBXGH"), 5.5)),
-        "smoker": 1 if str(payload.smoker or first_default("smoker", "SMQ020") or "no").lower() == "yes" else 0,
-        "diabetic": diabetic_feature_value(payload.diabetic or first_default("diabetic", "DIQ010")),
-        "high_bp": 1 if str(payload.highBp or first_default("high_bp", "highBp", "BPQ020") or "no").lower() == "yes" else 0,
-        "high_chol": 1 if str(payload.highChol or first_default("high_chol", "highChol", "BPQ080") or "no").lower() == "yes" else 0,
-        "bp_med": 1 if str(payload.bpMed or first_default("bp_med", "bpMed", "BPQ101D") or "no").lower() == "yes" else 0,
-        "chol_med": 1 if str(payload.cholMed or first_default("chol_med", "cholMed", "RXQ033") or "no").lower() == "yes" else 0,
-        "drink_count": as_float(payload.drink_count, as_float(first_default("drink_count"), 0)),
-        "physically_active": 1 if str(payload.physically_active or first_default("physically_active") or "yes").lower() == "yes" else 0,
-        "sleep_hours": as_float(sleep_weekday_input, as_float(first_default("sleep_hours", "sleepHoursWeekday", "SLD012"), 7)),
-        "sleep_hours_weekend": as_float(payload.sleepHoursWeekend, as_float(first_default("sleep_hours_weekend", "sleepHoursWeekend", "SLD013"), 7)),
-        "waist": as_float(waist_input, as_float(first_default("waist", "waistCm", "BMXWAIST"), 90)),
-        "crp": as_float(crp_input, as_float(first_default("crp", "hsCrp", "LBXHSCRP"), 1)),
-        "sodium": as_float(payload.sodium, as_float(first_default("sodium", "LBXSNASI"), 0)),
-        "wbc": as_float(payload.wbc, as_float(first_default("wbc", "LBXWBCSI"), 0)),
-        "hgb": as_float(payload.hemoglobin, as_float(first_default("hemoglobin", "hgb", "LBXHGB"), 0)),
-        "platelets": as_float(payload.platelets, as_float(first_default("platelets", "LBXPLTSI"), 0)),
-        "rdw": as_float(payload.rdw, as_float(first_default("rdw", "LBXRDW"), 0)),
-        "vigorous_activity": as_float(payload.vigorousActivityMinutes, as_float(first_default("vigorous_activity", "vigorousActivityMinutes", "PAD810Q"), 0)),
-        "moderate_activity": as_float(payload.moderateActivityMinutes, as_float(first_default("moderate_activity", "moderateActivityMinutes", "PAD790Q"), 0)),
-        "moderate_activity_units": as_float(payload.moderateActivityUnit, as_float(first_default("moderate_activity_units", "moderateActivityUnit", "PAD790U"), 1)),
-        "sedentary_minutes": as_float(payload.sedentaryMinutes, as_float(first_default("sedentary_minutes", "sedentaryMinutes", "PAD800"), 0)),
-        "sedentary_minutes_alt": as_float(payload.sedentaryMinutesAlt, as_float(first_default("sedentary_minutes_alt", "sedentaryMinutesAlt", "PAD680"), 0)),
-    }
-
-
-@app.post("/api/auth/login")
-def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) -> Dict[str, Any]:
-    with db.cursor() as cursor:
-        cursor.execute(
-            "SELECT id, username, email, role, password_hash FROM users WHERE username = %s AND is_active = TRUE",
             (payload.username,),
         )
         user = cursor.fetchone()
+        if user and user["is_locked"]:
+            log_audit_event(
+                db,
+                action_type="login",
+                resource_type="session",
+                endpoint=str(request.url.path),
+                method=request.method,
+                outcome="denied",
+                ip_address=ip_address,
+                user_id=user["id"],
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed login attempts. Try again later.",
+            )
         if not user or not password_matches(payload.password, user["password_hash"]):
+            if user:
+                attempts = int(user["failed_login_attempts"]) + 1
+                if attempts >= LOGIN_MAX_ATTEMPTS:
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET failed_login_attempts = 0,
+                            locked_until = NOW() + make_interval(mins => %s)
+                        WHERE id = %s
+                        """,
+                        (LOGIN_LOCKOUT_MINUTES, user["id"]),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE users SET failed_login_attempts = %s WHERE id = %s",
+                        (attempts, user["id"]),
+                    )
             log_audit_event(
                 db,
                 action_type="login",
@@ -931,14 +822,30 @@ def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) ->
                 endpoint=str(request.url.path),
                 method=request.method,
                 outcome="failure",
-                ip_address=request.client.host if request.client else None,
+                ip_address=ip_address,
+                user_id=user["id"] if user else None,
             )
             db.commit()
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
+        if user["demo_expired"]:
+            # Only revealed after the password checked out, so usernames cannot be probed.
+            log_audit_event(
+                db,
+                action_type="login",
+                resource_type="session",
+                endpoint=str(request.url.path),
+                method=request.method,
+                outcome="denied",
+                ip_address=ip_address,
+                user_id=user["id"],
+            )
+            db.commit()
+            raise demo_module.expired_error()
+
         token = secrets.token_urlsafe(48)
         token_hash = hash_session_token(token)
-        expires_at = datetime.utcnow() + timedelta(minutes=SESSION_TTL_MINUTES)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=SESSION_TTL_MINUTES)
         if password_hash_needs_upgrade(user["password_hash"]):
             cursor.execute(
                 "UPDATE users SET password_hash = %s WHERE id = %s",
@@ -948,7 +855,10 @@ def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) ->
             "INSERT INTO sessions (user_id, token, expires_at) VALUES (%s, %s, %s)",
             (user["id"], token_hash, expires_at),
         )
-        cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user["id"],))
+        cursor.execute(
+            "UPDATE users SET last_login = NOW(), failed_login_attempts = 0, locked_until = NULL WHERE id = %s",
+            (user["id"],),
+        )
         log_audit_event(
             db,
             action_type="login",
@@ -957,7 +867,7 @@ def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) ->
             endpoint=str(request.url.path),
             method=request.method,
             outcome="success",
-            ip_address=request.client.host if request.client else None,
+            ip_address=client_ip(request),
             user_id=user["id"],
         )
     db.commit()
@@ -969,7 +879,15 @@ def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) ->
         "username": user["username"],
         "email": user["email"],
         "role": user["role"],
+        "is_demo": bool(user["is_demo"]),
+        "demo_expires_at": to_iso(user["demo_expires_at"]) if user["is_demo"] else None,
     }
+
+
+@app.post("/api/demo/start", status_code=201)
+def start_demo(request: Request, db: Any = Depends(get_db)) -> Dict[str, Any]:
+    """Public: create a personal 15-day demo account with synthetic patients."""
+    return demo_module.create_demo_account(sys.modules[__name__], db, request)
 
 
 @app.post("/api/auth/logout")
@@ -982,10 +900,10 @@ def logout(
     token_hash = hash_session_token(token)
     user_id: Optional[int] = None
     with db.cursor() as cursor:
-        cursor.execute("SELECT user_id FROM sessions WHERE token = %s OR token = %s LIMIT 1", (token_hash, token))
+        cursor.execute("SELECT user_id FROM sessions WHERE token = %s LIMIT 1", (token_hash,))
         session_row = cursor.fetchone()
         user_id = int(session_row["user_id"]) if session_row else None
-        cursor.execute("DELETE FROM sessions WHERE token = %s OR token = %s", (token_hash, token))
+        cursor.execute("DELETE FROM sessions WHERE token = %s", (token_hash,))
         log_audit_event(
             db,
             action_type="logout",
@@ -993,7 +911,7 @@ def logout(
             resource_id=user_id,
             endpoint=str(request.url.path),
             method=request.method,
-            ip_address=request.client.host if request.client else None,
+            ip_address=client_ip(request),
             user_id=user_id,
         )
     db.commit()
@@ -1009,6 +927,8 @@ def me(authorization: Optional[str] = Header(default=None), db: Any = Depends(ge
         "username": user["username"],
         "email": user["email"],
         "role": user["role"],
+        "is_demo": user["is_demo"],
+        "demo_expires_at": user["demo_expires_at"],
     }
 
 
@@ -1018,19 +938,35 @@ def get_patients(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    require_patient_key(db)
+    scope_sql, scope_params = patient_scope_sql(user)
     with db.cursor() as cursor:
         cursor.execute(
             """
             SELECT p.id AS patient_id, p.external_patient_code, p.sex, p.created_at,
-                   psd.first_name, psd.last_name, psd.date_of_birth, psd.phone, psd.email
+                   {psd_cols},
+                   la.assessment_id AS last_assessment_id, la.created_at AS last_created_at,
+                   la.probability AS last_probability, la.risk_level AS last_risk_level,
+                   la.override_risk_level AS last_override_risk_level, la.review_status AS last_review_status
             FROM patients p
             LEFT JOIN patient_sensitive_data psd ON psd.patient_id = p.id
-            WHERE p.is_active = TRUE
+            LEFT JOIN LATERAL (
+                SELECT ra.id AS assessment_id, ra.created_at, ra.probability, ra.risk_level,
+                       ra.override_risk_level, ra.review_status
+                FROM risk_assessments ra
+                WHERE ra.patient_id = p.id AND ra.deleted_at IS NULL
+                ORDER BY ra.created_at DESC, ra.id DESC
+                LIMIT 1
+            ) la ON TRUE
+            WHERE p.is_active = TRUE AND {scope}
             ORDER BY p.created_at DESC
-            """
+            """.format(psd_cols=psd_columns(), scope=scope_sql),
+            scope_params,
         )
-        patients = cursor.fetchall()
+        patients = [{**row, **psd_decrypt(row)} for row in cursor.fetchall()]
+    audit(db, request, user, action_type="read", resource_type="patient_list")
+    db.commit()
     return [
         {
             "patient_id": p["patient_id"],
@@ -1042,6 +978,14 @@ def get_patients(
             "phone": p["phone"] or "",
             "email": p["email"] or "",
             "created_at": to_iso(p["created_at"]),
+            "last_assessment": None if p["last_assessment_id"] is None else {
+                "assessment_id": p["last_assessment_id"],
+                "created_at": to_iso(p["last_created_at"]),
+                "probability_cvd": float(p["last_probability"] or 0),
+                "risk_level": p["last_risk_level"],
+                "effective_risk_level": p["last_override_risk_level"] or p["last_risk_level"],
+                "review_status": p["last_review_status"] or "pending",
+            },
         }
         for p in patients
     ]
@@ -1054,21 +998,26 @@ def get_patient(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    require_patient_key(db)
+    scope_sql, scope_params = patient_scope_sql(user)
     with db.cursor() as cursor:
         cursor.execute(
             """
             SELECT p.id AS patient_id, p.external_patient_code, p.sex, p.created_at,
-                   psd.first_name, psd.last_name, psd.date_of_birth, psd.phone, psd.email
+                   {psd_cols}
             FROM patients p
             LEFT JOIN patient_sensitive_data psd ON psd.patient_id = p.id
-            WHERE p.id = %s AND p.is_active = TRUE
-            """,
-            (patient_id,),
+            WHERE p.id = %s AND p.is_active = TRUE AND {scope}
+            """.format(psd_cols=psd_columns(), scope=scope_sql),
+            (patient_id, *scope_params),
         )
         patient = cursor.fetchone()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    patient = {**patient, **psd_decrypt(patient)}
+    audit(db, request, user, action_type="read", resource_type="patient", resource_id=patient_id, patient_id=patient_id)
+    db.commit()
     return {
         "patient_id": patient["patient_id"],
         "external_patient_code": patient["external_patient_code"] or "",
@@ -1089,31 +1038,21 @@ def create_patient(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    require_patient_key(db)
+    date_of_birth = parse_date_of_birth(payload.dateOfBirth)
     with db.cursor() as cursor:
-        cursor.execute(
-            """
-            INSERT INTO patients (external_patient_code, sex)
-            VALUES (%s, %s)
-            RETURNING id AS patient_id, external_patient_code, sex, created_at
-            """,
-            (payload.externalPatientCode, payload.sex),
+        patient = insert_patient(
+            cursor,
+            first_name=payload.firstName, last_name=payload.lastName, date_of_birth=date_of_birth,
+            sex=payload.sex, phone=payload.phone, email=payload.email,
+            external_patient_code=payload.externalPatientCode,
+            owner_user_id=user["id"] if user["is_demo"] else None,
         )
-        patient = cursor.fetchone()
-        cursor.execute(
-            """
-            INSERT INTO patient_sensitive_data (patient_id, first_name, last_name, date_of_birth, phone, email)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (
-                patient["patient_id"],
-                payload.firstName,
-                payload.lastName,
-                payload.dateOfBirth,
-                payload.phone,
-                payload.email,
-            ),
-        )
+    audit(
+        db, request, user, action_type="create", resource_type="patient",
+        resource_id=patient["patient_id"], patient_id=patient["patient_id"],
+    )
     db.commit()
     return {
         "patient_id": patient["patient_id"],
@@ -1121,7 +1060,7 @@ def create_patient(
         "sex": patient["sex"],
         "first_name": payload.firstName,
         "last_name": payload.lastName,
-        "date_of_birth": payload.dateOfBirth,
+        "date_of_birth": to_iso(date_of_birth),
         "phone": payload.phone or "",
         "email": payload.email or "",
         "created_at": to_iso(patient["created_at"]),
@@ -1136,44 +1075,47 @@ def update_patient(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    require_patient_key(db)
+    date_of_birth = parse_date_of_birth(payload.dateOfBirth)
+    scope_sql, scope_params = patient_scope_sql(user, "patients")
     with db.cursor() as cursor:
         cursor.execute(
-            """
+            f"""
             UPDATE patients
             SET external_patient_code = COALESCE(%s, external_patient_code),
                 sex = COALESCE(%s, sex)
-            WHERE id = %s AND is_active = TRUE
+            WHERE id = %s AND is_active = TRUE AND {scope_sql}
             RETURNING id AS patient_id, external_patient_code, sex, created_at
             """,
-            (payload.externalPatientCode, payload.sex, patient_id),
+            (payload.externalPatientCode, payload.sex, patient_id, *scope_params),
         )
         patient = cursor.fetchone()
         if not patient:
             raise HTTPException(status_code=404, detail="Patient not found")
 
+        # New value wins; a None field keeps the stored value (decrypted, or legacy
+        # plaintext). Everything is re-encrypted and the plaintext columns NULLed.
         cursor.execute(
-            """
-            UPDATE patient_sensitive_data
-            SET first_name = COALESCE(%s, first_name),
-                last_name = COALESCE(%s, last_name),
-                date_of_birth = COALESCE(%s, date_of_birth),
-                phone = COALESCE(%s, phone),
-                email = COALESCE(%s, email)
-            WHERE patient_id = %s
-            RETURNING first_name, last_name, date_of_birth, phone, email
-            """,
-            (
-                payload.firstName,
-                payload.lastName,
-                payload.dateOfBirth,
-                payload.phone,
-                payload.email,
-                patient_id,
-            ),
+            "SELECT {cols} FROM patient_sensitive_data WHERE patient_id = %s FOR UPDATE".format(cols=psd_columns("patient_sensitive_data")),
+            (patient_id,),
         )
-        sensitive = cursor.fetchone()
+        existing = cursor.fetchone()
+        sensitive = None
+        if existing:
+            current = psd_decrypt(existing, patient_id)
+            new_values = {
+                "first_name": payload.firstName, "last_name": payload.lastName,
+                "date_of_birth": date_of_birth, "phone": payload.phone, "email": payload.email,
+            }
+            sensitive = {f: new_values[f] if new_values[f] is not None else current[f] for f in PSD_FIELDS}
+            assignments = ", ".join(f"{f}_enc = %s, {f} = NULL" for f in PSD_FIELDS)
+            cursor.execute(
+                f"UPDATE patient_sensitive_data SET {assignments} WHERE patient_id = %s",
+                (*(psd_encrypt_value(patient_id, f, sensitive[f]) for f in PSD_FIELDS), patient_id),
+            )
 
+    audit(db, request, user, action_type="update", resource_type="patient", resource_id=patient_id, patient_id=patient_id)
     db.commit()
 
     return {
@@ -1182,7 +1124,7 @@ def update_patient(
         "sex": patient["sex"],
         "first_name": sensitive["first_name"] if sensitive else payload.firstName or "",
         "last_name": sensitive["last_name"] if sensitive else payload.lastName or "",
-        "date_of_birth": to_iso(sensitive["date_of_birth"]) if sensitive else payload.dateOfBirth,
+        "date_of_birth": to_iso(sensitive["date_of_birth"]) if sensitive else to_iso(date_of_birth),
         "phone": sensitive["phone"] if sensitive else payload.phone or "",
         "email": sensitive["email"] if sensitive else payload.email or "",
         "created_at": to_iso(patient["created_at"]),
@@ -1196,20 +1138,22 @@ def deactivate_patient(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    scope_sql, scope_params = patient_scope_sql(user, "patients")
     with db.cursor() as cursor:
         cursor.execute(
-            """
+            f"""
             UPDATE patients
             SET is_active = FALSE
-            WHERE id = %s AND is_active = TRUE
+            WHERE id = %s AND is_active = TRUE AND {scope_sql}
             RETURNING id
             """,
-            (patient_id,),
+            (patient_id, *scope_params),
         )
         updated = cursor.fetchone()
         if not updated:
             raise HTTPException(status_code=404, detail="Patient not found")
+    audit(db, request, user, action_type="delete", resource_type="patient", resource_id=patient_id, patient_id=patient_id)
     db.commit()
     return {"success": True}
 
@@ -1221,51 +1165,48 @@ def get_patient_encounters(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    require_active_patient(db, patient_id, user)
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id AS encounter_id, patient_id, encounter_date, notes, created_at
-            FROM encounters
-            WHERE patient_id = %s
-            ORDER BY encounter_date DESC
+            SELECT e.id AS encounter_id, e.patient_id, e.encounter_date, e.notes, e.created_at,
+                   ef.id AS feature_id, ef.feature_name, ef.feature_value, ef.value_type
+            FROM encounters e
+            LEFT JOIN encounter_features ef ON ef.encounter_id = e.id
+            WHERE e.patient_id = %s
+            ORDER BY e.encounter_date DESC, e.id DESC, ef.id
             """,
             (patient_id,),
         )
-        encounters = cursor.fetchall()
+        rows = cursor.fetchall()
 
-        result: List[Dict[str, Any]] = []
-        for encounter in encounters:
-            cursor.execute(
-                """
-                SELECT id AS feature_id, encounter_id, feature_name, feature_value, value_type
-                FROM encounter_features
-                WHERE encounter_id = %s
-                ORDER BY id
-                """,
-                (encounter["encounter_id"],),
-            )
-            features = cursor.fetchall()
-            result.append(
+    by_id: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        encounter = by_id.get(row["encounter_id"])
+        if encounter is None:
+            encounter = {
+                "encounter_id": row["encounter_id"],
+                "patient_id": row["patient_id"],
+                "encounter_date": to_iso(row["encounter_date"]),
+                "notes": row["notes"] or "",
+                "created_at": to_iso(row["created_at"]),
+                "features": [],
+            }
+            by_id[row["encounter_id"]] = encounter
+        if row["feature_id"] is not None:
+            encounter["features"].append(
                 {
-                    "encounter_id": encounter["encounter_id"],
-                    "patient_id": encounter["patient_id"],
-                    "encounter_date": to_iso(encounter["encounter_date"]),
-                    "notes": encounter["notes"] or "",
-                    "created_at": to_iso(encounter["created_at"]),
-                    "features": [
-                        {
-                            "feature_id": feature["feature_id"],
-                            "encounter_id": feature["encounter_id"],
-                            "feature_code": feature["feature_name"],
-                            "feature_value": feature["feature_value"] or "",
-                            "value_type": feature["value_type"],
-                        }
-                        for feature in features
-                    ],
+                    "feature_id": row["feature_id"],
+                    "encounter_id": row["encounter_id"],
+                    "feature_code": row["feature_name"],
+                    "feature_value": row["feature_value"] or "",
+                    "value_type": row["value_type"],
                 }
             )
-    return result
+    audit(db, request, user, action_type="read", resource_type="encounter_list", patient_id=patient_id)
+    db.commit()
+    return list(by_id.values())
 
 
 @app.post("/api/encounters", status_code=201)
@@ -1275,7 +1216,8 @@ def create_encounter(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    require_active_patient(db, payload.patientId, user)
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1300,6 +1242,10 @@ def create_encounter(
                     feature.valueType or "string",
                 ),
             )
+    audit(
+        db, request, user, action_type="create", resource_type="encounter",
+        resource_id=encounter["encounter_id"], patient_id=payload.patientId,
+    )
     db.commit()
     return {
         "encounter_id": encounter["encounter_id"],
@@ -1424,31 +1370,49 @@ def get_model(
 def get_risk_assessments(
     request: Request,
     authorization: Optional[str] = Header(default=None),
+    review_status: Optional[str] = Query(default=None, pattern="^(pending|reviewed)$"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
+    require_patient_key(db)
+    scope_sql, scope_params = patient_scope_sql(user)
     with db.cursor() as cursor:
         cursor.execute(
             """
             SELECT ra.id AS assessment_id, ra.patient_id, ra.encounter_id, ra.model_id,
                    ra.probability AS probability_cvd, ra.risk_level, ra.assessment_status, ra.review_status,
                    ra.recommendation AS recommendation_text, ra.notes, ra.created_at,
-                   p.external_patient_code, m.name AS model_name, m.version AS model_version
+                   ra.reviewed_at, ra.review_comment, ru.username AS reviewed_by_username,
+                   p.external_patient_code, p.sex AS patient_sex, {psd_cols}, {override_cols},
+                   m.name AS model_name, m.version AS model_version
             FROM risk_assessments ra
             JOIN patients p ON p.id = ra.patient_id
+            LEFT JOIN patient_sensitive_data psd ON psd.patient_id = ra.patient_id
             LEFT JOIN model_registry m ON m.id = ra.model_id
-            ORDER BY ra.created_at DESC
-            LIMIT 100
-            """
+            LEFT JOIN users ru ON ru.id = ra.reviewed_by
+            {override_join}
+            WHERE ra.deleted_at IS NULL AND {scope}{review_filter}
+            ORDER BY ra.created_at DESC, ra.id DESC
+            LIMIT %s
+            """.format(
+                psd_cols=psd_columns(), scope=scope_sql, override_cols=clinical.OVERRIDE_COLUMNS_SQL,
+                override_join=clinical.OVERRIDE_JOIN_SQL,
+                review_filter=" AND ra.review_status = %s" if review_status else "",
+            ),
+            (*scope_params, *((review_status,) if review_status else ()), limit),
         )
-        assessments = cursor.fetchall()
+        assessments = [{**row, "patient_label": _assessment_patient_name(row)} for row in cursor.fetchall()]
 
+    audit(db, request, user, action_type="read", resource_type="risk_assessment_list")
+    db.commit()
     return [
         {
             "assessment_id": assessment["assessment_id"],
             "encounter_id": assessment["encounter_id"],
             "patient_id": assessment["patient_id"],
-            "patient_name": assessment["external_patient_code"] or f"Patient {assessment['patient_id']}",
+            "patient_name": assessment["patient_label"],
+            **_assessment_patient_fields(assessment),
             "model_id": assessment["model_id"],
             "model_name": assessment["model_name"] or "",
             "model_version": assessment["model_version"] or "",
@@ -1460,6 +1424,10 @@ def get_risk_assessments(
             "recommendation_text": assessment["recommendation_text"] or "",
             "notes": assessment["notes"] or "",
             "created_at": to_iso(assessment["created_at"]),
+            "reviewed_by_username": assessment["reviewed_by_username"],
+            "reviewed_at": to_iso(assessment["reviewed_at"]),
+            "review_comment": assessment["review_comment"],
+            **clinical.serialize_override(assessment, to_iso),
         }
         for assessment in assessments
     ]
@@ -1472,31 +1440,84 @@ def get_risk_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
+    require_patient_key(db)
+    scope_sql, scope_params = patient_scope_sql(user)
     with db.cursor() as cursor:
         cursor.execute(
             """
             SELECT ra.id AS assessment_id, ra.patient_id, ra.encounter_id, ra.model_id,
                     ra.probability AS probability_cvd, ra.risk_level, ra.assessment_status, ra.review_status,
-                    ra.recommendation AS recommendation_text, ra.notes, ra.created_at,
-                    p.external_patient_code, m.name AS model_name, m.version AS model_version
+                    ra.recommendation AS recommendation_text, ra.notes, ra.created_at, ra.explanation_json,
+                    ra.reviewed_at, ra.review_comment, ru.username AS reviewed_by_username,
+                    p.external_patient_code, p.sex AS patient_sex, {psd_cols}, {override_cols},
+                    m.name AS model_name, m.version AS model_version
             FROM risk_assessments ra
             JOIN patients p ON p.id = ra.patient_id
+            LEFT JOIN patient_sensitive_data psd ON psd.patient_id = ra.patient_id
             LEFT JOIN model_registry m ON m.id = ra.model_id
-            WHERE ra.id = %s
+            LEFT JOIN users ru ON ru.id = ra.reviewed_by
+            {override_join}
+            WHERE ra.id = %s AND ra.deleted_at IS NULL AND {scope}
             LIMIT 1
-            """,
-            (assessment_id,),
+            """.format(
+                psd_cols=psd_columns(), scope=scope_sql, override_cols=clinical.OVERRIDE_COLUMNS_SQL,
+                override_join=clinical.OVERRIDE_JOIN_SQL,
+            ),
+            (assessment_id, *scope_params),
         )
         assessment = cursor.fetchone()
-    if not assessment:
-        raise HTTPException(status_code=404, detail="Assessment not found")
+        if not assessment:
+            raise HTTPException(status_code=404, detail="Assessment not found")
+        # Scope is re-applied on the join so the inputs can never come from the other world.
+        cursor.execute(
+            f"""
+            SELECT afv.feature_name, afv.feature_value, afv.value_type
+            FROM assessment_feature_values afv
+            JOIN risk_assessments ra ON ra.id = afv.assessment_id
+            JOIN patients p ON p.id = ra.patient_id
+            WHERE afv.assessment_id = %s AND ra.deleted_at IS NULL AND {scope_sql}
+            ORDER BY afv.feature_name
+            """,
+            (assessment_id, *scope_params),
+        )
+        inputs = {row["feature_name"]: clinical.feature_value(row) for row in cursor.fetchall()}
+        # History is read through the (scoped) parent assessment, newest first.
+        cursor.execute(
+            f"""
+            SELECT o.risk_level, o.recommendation, o.reason, o.created_at, ou.username AS overridden_by_username
+            FROM risk_assessment_overrides o
+            JOIN risk_assessments ra ON ra.id = o.assessment_id
+            JOIN patients p ON p.id = ra.patient_id
+            LEFT JOIN users ou ON ou.id = o.overridden_by
+            WHERE o.assessment_id = %s AND ra.deleted_at IS NULL AND {scope_sql}
+            ORDER BY o.created_at DESC, o.id DESC
+            """,
+            (assessment_id, *scope_params),
+        )
+        override_history = [
+            {
+                "risk_level": row["risk_level"],
+                "recommendation": row["recommendation"],
+                "reason": row["reason"],
+                "overridden_by_username": row["overridden_by_username"],
+                "created_at": to_iso(row["created_at"]),
+            }
+            for row in cursor.fetchall()
+        ]
+    assessment["patient_label"] = _assessment_patient_name(assessment)
 
+    audit(
+        db, request, user, action_type="read", resource_type="risk_assessment",
+        resource_id=assessment_id, patient_id=assessment["patient_id"],
+    )
+    db.commit()
     return {
         "assessment_id": assessment["assessment_id"],
         "encounter_id": assessment["encounter_id"],
         "patient_id": assessment["patient_id"],
-        "patient_name": assessment["external_patient_code"] or f"Patient {assessment['patient_id']}",
+        "patient_name": assessment["patient_label"],
+        **_assessment_patient_fields(assessment),
         "model_id": assessment["model_id"],
         "model_name": assessment["model_name"] or "",
         "model_version": assessment["model_version"] or "",
@@ -1508,6 +1529,13 @@ def get_risk_assessment(
         "recommendation_text": assessment["recommendation_text"] or "",
         "notes": assessment["notes"] or "",
         "created_at": to_iso(assessment["created_at"]),
+        "reviewed_by_username": assessment["reviewed_by_username"],
+        "reviewed_at": to_iso(assessment["reviewed_at"]),
+        "review_comment": assessment["review_comment"],
+        **clinical.serialize_override(assessment, to_iso),
+        "inputs": inputs,
+        "override_history": override_history,
+        "explanation": assessment["explanation_json"] or {},
     }
 
 
@@ -1518,23 +1546,30 @@ def get_patient_risk_assessments(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    require_active_patient(db, patient_id, user)
     with db.cursor() as cursor:
         cursor.execute(
             """
             SELECT ra.id AS assessment_id, ra.patient_id, ra.encounter_id, ra.model_id,
                    ra.probability AS probability_cvd, ra.risk_level, ra.assessment_status, ra.review_status,
                    ra.recommendation AS recommendation_text, ra.notes, ra.created_at,
+                   ra.reviewed_at, ra.review_comment, ru.username AS reviewed_by_username,
+                   {override_cols},
                    m.name AS model_name, m.version AS model_version
             FROM risk_assessments ra
             LEFT JOIN model_registry m ON m.id = ra.model_id
-            WHERE ra.patient_id = %s
+            LEFT JOIN users ru ON ru.id = ra.reviewed_by
+            {override_join}
+            WHERE ra.patient_id = %s AND ra.deleted_at IS NULL
             ORDER BY ra.created_at DESC
-            """,
+            """.format(override_cols=clinical.OVERRIDE_COLUMNS_SQL, override_join=clinical.OVERRIDE_JOIN_SQL),
             (patient_id,),
         )
         assessments = cursor.fetchall()
 
+    audit(db, request, user, action_type="read", resource_type="risk_assessment_list", patient_id=patient_id)
+    db.commit()
     return [
         {
             "assessment_id": assessment["assessment_id"],
@@ -1551,18 +1586,67 @@ def get_patient_risk_assessments(
             "recommendation_text": assessment["recommendation_text"] or "",
             "notes": assessment["notes"] or "",
             "created_at": to_iso(assessment["created_at"]),
+            "reviewed_by_username": assessment["reviewed_by_username"],
+            "reviewed_at": to_iso(assessment["reviewed_at"]),
+            "review_comment": assessment["review_comment"],
+            **clinical.serialize_override(assessment, to_iso),
         }
         for assessment in assessments
     ]
 
 
-def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any]:
+def _assessment_inputs(payload: RiskAssessmentRequest) -> Dict[str, Any]:
+    """Collect request values by model input key (snake_case field first, then its camelCase alias)."""
+
+    def pick(*values: Any) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
+    return {
+        "age": payload.age,
+        "bmi": payload.bmi,
+        "sbp": pick(payload.sbp, payload.systolicBp),
+        "dbp": pick(payload.dbp, payload.diastolicBp),
+        "total_cholesterol": pick(payload.total_cholesterol, payload.totalCholesterol),
+        "hdl": payload.hdl,
+        "hba1c": pick(payload.hba1c, payload.hba1cPercent),
+        "crp": pick(payload.crp, payload.hsCrp),
+        "waist": pick(payload.waist, payload.waistCm),
+        "sodium": payload.sodium,
+        "wbc": payload.wbc,
+        "hgb": payload.hemoglobin,
+        "platelets": payload.platelets,
+        "rdw": payload.rdw,
+        "vigorous_activity": payload.vigorousActivityMinutes,
+        "moderate_activity": payload.moderateActivityMinutes,
+        "moderate_activity_units": payload.moderateActivityUnit,
+        "sedentary_minutes": payload.sedentaryMinutes,
+        "sedentary_minutes_alt": payload.sedentaryMinutesAlt,
+        "sleep_hours": pick(payload.sleep_hours, payload.sleepHoursWeekday),
+        "sleep_hours_weekend": payload.sleepHoursWeekend,
+        "income_ratio": payload.incomeRatio,
+        "race": payload.race,
+        "education": payload.education,
+        "smoker": payload.smoker,
+        "diabetic": payload.diabetic,
+        "high_bp": payload.highBp,
+        "high_chol": payload.highChol,
+        "bp_med": payload.bpMed,
+        "chol_med": payload.cholMed,
+    }
+
+
+def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, Any]) -> Dict[str, Any]:
+    require_patient_key(db)
     ensure_active_model_registry_entry(db)
     ensure_cds_rules_seeded(db)
+    require_active_patient(db, payload.patientId, user)
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT p.id, p.sex, psd.date_of_birth
+            SELECT p.id AS patient_id, p.sex, psd.date_of_birth, psd.date_of_birth_enc
             FROM patients p
             LEFT JOIN patient_sensitive_data psd ON psd.patient_id = p.id
             WHERE p.id = %s
@@ -1588,92 +1672,33 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
             raise HTTPException(status_code=400, detail="No active model found")
 
     if payload.age is None:
-        derived_age = calculate_age_years(patient.get("date_of_birth"))
+        derived_age = calculate_age_years(psd_decrypt(patient)["date_of_birth"])
         if derived_age is None:
             raise HTTPException(
                 status_code=400,
                 detail="Patient date of birth is required to derive age for risk assessment",
             )
+        if not 18 <= derived_age <= 120:
+            raise HTTPException(
+                status_code=422,
+                detail="Patient age derived from date of birth must be between 18 and 120",
+            )
         payload.age = float(derived_age)
 
-    feature_defaults = latest_feature_map(db, payload.patientId)
-    input_features = build_features(payload, feature_defaults, patient.get("sex"))
-
-    feature_cols = [
-        "age",
-        "sex",
-        "race",
-        "bmi",
-        "sbp",
-        "dbp",
-        "total_cholesterol",
-        "hdl",
-        "ldl",
-        "triglycerides",
-        "fasting_glucose",
-        "hba1c",
-        "smoker",
-        "drink_count",
-        "physically_active",
-        "sleep_hours",
-        "waist",
-        "crp",
-        "pulse_pressure",
-        "tc_hdl_ratio",
-        "bmi_age",
-        "waist_bmi",
-        "sleep_diff",
-        "log_crp",
-        "hba1c_age",
-        "sbp_age",
-        "log_triglycerides",
-        "log_fasting_glucose",
-    ]
-
-    algorithm = str(model_info.get("algorithm") or "").lower()
-    model_name = str(model_info.get("model_name") or "").lower()
-    is_meta_configured = algorithm == "meta_learner" or "meta" in model_name
-    meta_bundle_ready = meta_bundle_available()
-    use_meta_pipeline = meta_bundle_ready
-    probability: float
-
-    if is_meta_configured and not meta_bundle_ready:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Active model is configured as meta learner, but required artifacts are missing. "
-                "Deploy Back-End/model/preprocessor_ml.joblib, meta_learner.joblib, and all base model files."
-            ),
-        )
-
-    if use_meta_pipeline:
-        try:
-            bundle = load_meta_bundle()
-        except RuntimeError as error:
-            raise HTTPException(status_code=500, detail=str(error)) from error
-        nhanes_row = build_nhanes_row(input_features)
-        df = pd.DataFrame([nhanes_row])
-        df = create_nhanes_features(df)
-        expected_cols = getattr(bundle["preprocessor"], "feature_names_in_", None)
-        if expected_cols is not None:
-            for col in expected_cols:
-                if col not in df.columns:
-                    df[col] = np.nan
-            df = df[list(expected_cols)]
-        base_input = bundle["preprocessor"].transform(df)
-        base_probs = [
-            bundle["base_models"][name].predict_proba(base_input)[:, 1]
-            for name in ("xgb", "lgbm", "rf", "lr")
-        ]
-        meta_input = np.column_stack(base_probs)
-        probability = float(bundle["meta"].predict_proba(meta_input)[0][1])
-    else:
-        model = load_ml_model()
-        if model is None or pd is None or np is None:
-            raise HTTPException(status_code=500, detail="ML model is not available")
-        df = create_cvd_features(pd.DataFrame([input_features]))
-        df = preprocess_for_model(df, feature_cols)
-        probability = float(model.predict_proba(df[feature_cols])[0][1])
+    raw_row = inference.build_raw_row(_assessment_inputs(payload), patient.get("sex"))
+    missing = inference.missing_inputs(raw_row)
+    probability = inference.predict_probability(raw_row)
+    explanation = {
+        "missingInputs": missing,
+        "modelVersion": inference.get_schema()["model_version"],
+        "decisionThreshold": float(inference.get_metrics().get("decision_threshold", 0.5)),
+    }
+    try:
+        explanation["contributions"] = explain_module.explain(raw_row)
+    except Exception as exc:  # explanation is auxiliary; never block the assessment
+        logging.getLogger(__name__).error("Factor explanation failed: %s", type(exc).__name__)
+        explanation["contributions"] = []
+        explanation["explanationError"] = True
 
     with db.cursor() as cursor:
         # Risk level is determined by app thresholds first to keep classification
@@ -1709,8 +1734,8 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
 
         cursor.execute(
             """
-            INSERT INTO risk_assessments (patient_id, model_id, encounter_id, probability, risk_level, recommendation, notes, assessment_status, review_status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO risk_assessments (patient_id, model_id, encounter_id, probability, risk_level, recommendation, notes, assessment_status, review_status, explanation_json, heart_rate_bpm)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id AS assessment_id, created_at
             """,
             (
@@ -1723,12 +1748,16 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
                 payload.notes or "",
                 "completed",
                 "pending",
+                Json(explanation),
+                payload.heartRate,
             ),
         )
         assessment = cursor.fetchone()
 
-        for key, value in input_features.items():
-            value_type = "number" if isinstance(value, (int, float)) else "string"
+        numeric_columns = set(RAW_NUMERIC_COLUMNS)
+        for key, value in raw_row.items():
+            value_type = "number" if key in numeric_columns else "string"
+            stored = None if key in missing else str(value)
             cursor.execute(
                 """
                 INSERT INTO assessment_feature_values (assessment_id, feature_name, feature_value, value_type)
@@ -1736,16 +1765,22 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any) -> Dict[str, Any
                 ON CONFLICT (assessment_id, feature_name)
                 DO UPDATE SET feature_value = EXCLUDED.feature_value, value_type = EXCLUDED.value_type
                 """,
-                (assessment["assessment_id"], key, str(value), value_type),
+                (assessment["assessment_id"], key, stored, value_type),
             )
 
-    db.commit()
+    # No commit here: the caller writes the audit row and commits once, so the
+    # assessment and its audit entry are stored atomically.
     return {
         "assessmentId": assessment["assessment_id"],
         "probability": round(probability, 4),
         "riskLevel": risk_level,
         "recommendation": recommendation,
         "createdAt": to_iso(assessment["created_at"]),
+        "heartRate": payload.heartRate,
+        "missingInputs": missing,
+        "modelVersion": explanation["modelVersion"],
+        "contributions": explanation["contributions"],
+        **({"explanationError": True} if explanation.get("explanationError") else {}),
     }
 
 
@@ -1756,18 +1791,11 @@ def create_risk_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
-    result = _predict_and_store(payload, db)
-    log_audit_event(
-        db,
-        action_type="create",
-        resource_type="risk_assessment",
-        resource_id=int(result["assessmentId"]),
-        patient_id=payload.patientId,
-        endpoint=str(request.url.path),
-        method=request.method,
-        ip_address=request.client.host if request.client else None,
-        user_id=optional_session_user_id(db, authorization),
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    result = _predict_and_store(payload, db, user)
+    audit(
+        db, request, user, action_type="create", resource_type="risk_assessment",
+        resource_id=int(result["assessmentId"]), patient_id=payload.patientId,
     )
     db.commit()
     return result
@@ -1780,8 +1808,14 @@ def predict(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
-    return _predict_and_store(payload, db)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    result = _predict_and_store(payload, db, user)
+    audit(
+        db, request, user, action_type="create", resource_type="risk_assessment",
+        resource_id=int(result["assessmentId"]), patient_id=payload.patientId,
+    )
+    db.commit()
+    return result
 
 
 @app.patch("/api/risk-assessments/{assessment_id}/review")
@@ -1792,40 +1826,110 @@ def review_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
     status = payload.reviewStatus.strip().lower()
     if status not in {"pending", "reviewed"}:
         raise HTTPException(status_code=400, detail="Invalid review status")
 
+    scope_sql, scope_params = patient_scope_sql(user)
     with db.cursor() as cursor:
         cursor.execute(
-            """
+            f"""
             UPDATE risk_assessments
-            SET review_status = %s
-            WHERE id = %s
-            RETURNING id AS assessment_id, review_status, assessment_status
+            SET review_status = %s,
+                reviewed_by = CASE WHEN %s = 'reviewed' THEN %s ELSE NULL END,
+                reviewed_at = CASE WHEN %s = 'reviewed' THEN NOW() ELSE NULL END,
+                review_comment = CASE WHEN %s = 'reviewed' THEN %s ELSE NULL END
+            WHERE id = %s AND deleted_at IS NULL
+              AND patient_id IN (SELECT p.id FROM patients p WHERE {scope_sql})
+            RETURNING id AS assessment_id, patient_id, review_status, assessment_status
             """,
-            (status, assessment_id),
+            (status, status, user["id"], status, status, payload.reviewComment, assessment_id, *scope_params),
         )
         updated = cursor.fetchone()
         if not updated:
             raise HTTPException(status_code=404, detail="Assessment not found")
 
-    log_audit_event(
-        db,
-        action_type="update",
-        resource_type="risk_assessment",
-        resource_id=assessment_id,
-        endpoint=str(request.url.path),
-        method=request.method,
-        ip_address=request.client.host if request.client else None,
-        user_id=optional_session_user_id(db, authorization),
+    audit(
+        db, request, user, action_type="update", resource_type="risk_assessment",
+        resource_id=assessment_id, patient_id=updated["patient_id"],
     )
     db.commit()
     return {
         "assessment_id": updated["assessment_id"],
         "review_status": updated["review_status"],
         "assessment_status": updated["assessment_status"],
+    }
+
+
+@app.patch("/api/risk-assessments/{assessment_id}/override")
+def override_assessment(
+    assessment_id: int,
+    payload: clinical.OverrideRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Merge a clinician override into the assessment (omitted field kept, explicit null clears it).
+
+    Each request also appends a row to risk_assessment_overrides. Changing content after sign-off
+    sends a reviewed assessment back to pending.
+    """
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician"}, request=request)
+    scope_sql, scope_params = patient_scope_sql(user)
+    sent = payload.model_fields_set
+    with db.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT id, override_risk_level, override_recommendation
+            FROM risk_assessments
+            WHERE id = %s AND deleted_at IS NULL
+              AND patient_id IN (SELECT p.id FROM patients p WHERE {scope_sql})
+            FOR UPDATE
+            """,
+            (assessment_id, *scope_params),
+        )
+        current = cursor.fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="Assessment not found")
+        level = payload.riskLevel if "riskLevel" in sent else current["override_risk_level"]
+        recommendation = payload.recommendation if "recommendation" in sent else current["override_recommendation"]
+        if level is None and recommendation is None and not {"riskLevel", "recommendation"} <= sent:
+            raise HTTPException(
+                status_code=422,
+                detail="Override would be empty; send both riskLevel and recommendation as null to remove it",
+            )
+        cursor.execute(
+            """
+            UPDATE risk_assessments
+            SET override_risk_level = %s, override_recommendation = %s, override_reason = %s,
+                overridden_by = %s, overridden_at = NOW(),
+                review_status = 'pending', reviewed_by = NULL, reviewed_at = NULL, review_comment = NULL
+            WHERE id = %s
+            RETURNING id AS assessment_id, patient_id, review_status, risk_level,
+                      recommendation AS recommendation_text, heart_rate_bpm,
+                      override_risk_level, override_recommendation, override_reason, overridden_at
+            """,
+            (level, recommendation, payload.reason, user["id"], assessment_id),
+        )
+        updated = cursor.fetchone()
+        cursor.execute(
+            """
+            INSERT INTO risk_assessment_overrides (assessment_id, risk_level, recommendation, reason, overridden_by)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (assessment_id, level, recommendation, payload.reason, user["id"]),
+        )
+
+    audit(
+        db, request, user, action_type="update", resource_type="risk_assessment_override",
+        resource_id=assessment_id, patient_id=updated["patient_id"],
+    )
+    db.commit()
+    return {
+        "assessment_id": updated["assessment_id"],
+        "review_status": updated["review_status"],
+        **clinical.serialize_override({**updated, "overridden_by_username": user["username"]}, to_iso),
     }
 
 
@@ -1836,30 +1940,26 @@ def delete_risk_assessment(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, bool]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor"}, request=request)
+    scope_sql, scope_params = patient_scope_sql(user)
     with db.cursor() as cursor:
         cursor.execute(
-            """
-            DELETE FROM risk_assessments
-            WHERE id = %s
+            f"""
+            UPDATE risk_assessments
+            SET deleted_at = NOW(), deleted_by = %s
+            WHERE id = %s AND deleted_at IS NULL
+              AND patient_id IN (SELECT p.id FROM patients p WHERE {scope_sql})
             RETURNING id, patient_id
             """,
-            (assessment_id,),
+            (user["id"], assessment_id, *scope_params),
         )
         removed = cursor.fetchone()
         if not removed:
             raise HTTPException(status_code=404, detail="Assessment not found")
 
-    log_audit_event(
-        db,
-        action_type="delete",
-        resource_type="risk_assessment",
-        resource_id=assessment_id,
-        patient_id=removed["patient_id"],
-        endpoint=str(request.url.path),
-        method=request.method,
-        ip_address=request.client.host if request.client else None,
-        user_id=optional_session_user_id(db, authorization),
+    audit(
+        db, request, user, action_type="delete", resource_type="risk_assessment",
+        resource_id=assessment_id, patient_id=removed["patient_id"],
     )
     db.commit()
     return {"success": True}
@@ -1871,6 +1971,7 @@ def get_audit_log(
     authorization: Optional[str] = Header(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    outcome: Optional[str] = Query(default=None, pattern="^(success|failure|denied)$"),
     db: Any = Depends(get_db),
 ) -> List[Dict[str, Any]]:
     authorize_user(db, authorization, allowed_roles={"admin", "auditor"}, request=request)
@@ -1881,10 +1982,11 @@ def get_audit_log(
                    al.patient_id, al.outcome, al.endpoint, al.ip_address, al.created_at, u.username
             FROM audit_log al
             LEFT JOIN users u ON u.id = al.user_id
-            ORDER BY al.created_at DESC
+            {outcome_filter}
+            ORDER BY al.created_at DESC, al.id DESC
             LIMIT %s OFFSET %s
-            """,
-            (limit, offset),
+            """.format(outcome_filter="WHERE al.outcome = %s" if outcome else ""),
+            (*((outcome,) if outcome else ()), limit, offset),
         )
         rows = cursor.fetchall()
     return [
@@ -1896,6 +1998,7 @@ def get_audit_log(
             "resource_id": row["resource_id"],
             "patient_id": row["patient_id"],
             "outcome": row["outcome"],
+            "endpoint": row["endpoint"] or "",
             "ip_address": str(row["ip_address"]) if row["ip_address"] else "",
             "created_at": to_iso(row["created_at"]),
         }
@@ -1913,7 +2016,7 @@ def get_users(
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id AS user_id, username, email, role, is_active, last_login, created_at
+            SELECT id AS user_id, username, email, role, is_active, last_login, created_at, is_demo, demo_expires_at
             FROM users
             WHERE role = ANY(%s)
             ORDER BY created_at DESC
@@ -1931,7 +2034,7 @@ def create_user(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
+    actor = authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
     role = payload.role.strip().lower()
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -1939,8 +2042,11 @@ def create_user(
         raise HTTPException(status_code=400, detail="Username is required")
     if not payload.email.strip():
         raise HTTPException(status_code=400, detail="Email is required")
-    if len(payload.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if len(payload.password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters",
+        )
 
     with db.cursor() as cursor:
         cursor.execute(
@@ -1961,7 +2067,7 @@ def create_user(
             """
             INSERT INTO users (username, email, role, password_hash, is_active)
             VALUES (%s, %s, %s, %s, TRUE)
-            RETURNING id AS user_id, username, email, role, is_active, last_login, created_at
+            RETURNING id AS user_id, username, email, role, is_active, last_login, created_at, is_demo, demo_expires_at
             """,
             (
                 payload.username.strip(),
@@ -1979,8 +2085,8 @@ def create_user(
         resource_id=user["user_id"],
         endpoint=str(request.url.path),
         method=request.method,
-        ip_address=request.client.host if request.client else None,
-        user_id=optional_session_user_id(db, authorization),
+        ip_address=client_ip(request),
+        user_id=actor["id"],
     )
     db.commit()
     return serialize_user(user)
@@ -1997,7 +2103,7 @@ def get_user(
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id AS user_id, username, email, role, is_active, last_login, created_at
+            SELECT id AS user_id, username, email, role, is_active, last_login, created_at, is_demo, demo_expires_at
             FROM users
             WHERE id = %s
             """,
@@ -2017,7 +2123,7 @@ def update_user(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
+    actor = authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
     username = payload.username.strip() if payload.username is not None else None
     email = payload.email.strip() if payload.email is not None else None
     role = payload.role.strip().lower() if payload.role is not None else None
@@ -2029,17 +2135,24 @@ def update_user(
         raise HTTPException(status_code=400, detail="Email is required")
     if role is not None and role not in VALID_USER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
-    if password is not None and len(password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if password is not None and len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters",
+        )
 
-    actor_user_id = optional_session_user_id(db, authorization)
+    actor_user_id = actor["id"]
     if actor_user_id == user_id and payload.isActive is False:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
 
     with db.cursor() as cursor:
-        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT id, role, is_demo FROM users WHERE id = %s", (user_id,))
+        existing_user = cursor.fetchone()
+        if not existing_user:
             raise HTTPException(status_code=404, detail="User not found")
+        role_changed = role is not None and role != existing_user["role"]
+        if role_changed and existing_user["is_demo"]:
+            raise HTTPException(status_code=400, detail="Demo accounts cannot change role")
 
         if username is not None:
             cursor.execute(
@@ -2084,11 +2197,19 @@ def update_user(
             UPDATE users
             SET {", ".join(assignments)}
             WHERE id = %s
-            RETURNING id AS user_id, username, email, role, is_active, last_login, created_at
+            RETURNING id AS user_id, username, email, role, is_active, last_login, created_at, is_demo, demo_expires_at
             """,
             tuple(values),
         )
         updated_user = cursor.fetchone()
+
+        if password is not None or role_changed:
+            # Credentials/privileges changed: end existing sessions and clear any lockout.
+            cursor.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+            cursor.execute(
+                "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = %s",
+                (user_id,),
+            )
 
     log_audit_event(
         db,
@@ -2097,7 +2218,7 @@ def update_user(
         resource_id=user_id,
         endpoint=str(request.url.path),
         method=request.method,
-        ip_address=request.client.host if request.client else None,
+        ip_address=client_ip(request),
         user_id=actor_user_id,
     )
     db.commit()
@@ -2111,8 +2232,8 @@ def delete_user(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> None:
-    authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
-    actor_user_id = optional_session_user_id(db, authorization)
+    actor = authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
+    actor_user_id = actor["id"]
     if actor_user_id == user_id:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
 
@@ -2137,7 +2258,7 @@ def delete_user(
         resource_id=user_id,
         endpoint=str(request.url.path),
         method=request.method,
-        ip_address=request.client.host if request.client else None,
+        ip_address=client_ip(request),
         user_id=actor_user_id,
     )
     db.commit()
@@ -2150,23 +2271,47 @@ def dashboard_stats(
     authorization: Optional[str] = Header(default=None),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
+    user = authorize_user(db, authorization, allowed_roles={"admin", "doctor", "clinician", "auditor"}, request=request)
     ensure_active_model_registry_entry(db)
+    scope_sql, scope_params = patient_scope_sql(user)
     with db.cursor() as cursor:
-        cursor.execute("SELECT COUNT(*) AS count FROM patients")
+        cursor.execute(
+            f"SELECT COUNT(*) AS count FROM patients p WHERE p.is_active = TRUE AND {scope_sql}",
+            scope_params,
+        )
         total_patients = int(cursor.fetchone()["count"])
 
-        cursor.execute("SELECT COUNT(*) AS count FROM risk_assessments")
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM risk_assessments ra JOIN patients p ON p.id = ra.patient_id
+            WHERE ra.deleted_at IS NULL AND {scope_sql}
+            """,
+            scope_params,
+        )
         total_assessments = int(cursor.fetchone()["count"])
 
         cursor.execute(
-            """
-            SELECT risk_level, COUNT(*) AS count
-            FROM risk_assessments
-            GROUP BY risk_level
-            """
+            f"""
+            SELECT {clinical.EFFECTIVE_RISK_SQL} AS risk_level, COUNT(*) AS count
+            FROM risk_assessments ra JOIN patients p ON p.id = ra.patient_id
+            WHERE ra.deleted_at IS NULL AND {scope_sql}
+            GROUP BY {clinical.EFFECTIVE_RISK_SQL}
+            """,
+            scope_params,
         )
         distribution = {row["risk_level"]: int(row["count"]) for row in cursor.fetchall()}
+
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) FILTER (WHERE ra.review_status = 'pending') AS pending_review,
+                   COUNT(*) FILTER (WHERE {clinical.EFFECTIVE_RISK_SQL} = 'high') AS high_risk
+            FROM risk_assessments ra JOIN patients p ON p.id = ra.patient_id
+            WHERE ra.deleted_at IS NULL AND {scope_sql}
+            """,
+            scope_params,
+        )
+        review_counts = cursor.fetchone()
 
         cursor.execute(
             """
@@ -2180,16 +2325,22 @@ def dashboard_stats(
         active_model_row = cursor.fetchone()
 
         cursor.execute(
-            """
+            f"""
             SELECT ra.id AS assessment_id, ra.patient_id, ra.probability AS probability_cvd,
-                   ra.risk_level, ra.created_at, p.external_patient_code
+                   ra.risk_level, {clinical.EFFECTIVE_RISK_SQL} AS effective_risk_level,
+                   ra.created_at, p.external_patient_code
             FROM risk_assessments ra
             JOIN patients p ON p.id = ra.patient_id
+            WHERE ra.deleted_at IS NULL AND {scope_sql}
             ORDER BY ra.created_at DESC
             LIMIT 10
-            """
+            """,
+            scope_params,
         )
         recent_rows = cursor.fetchall()
+
+    audit(db, request, user, action_type="read", resource_type="dashboard")
+    db.commit()
 
     recent = [
         {
@@ -2197,6 +2348,7 @@ def dashboard_stats(
             "patient_id": row["patient_id"],
             "probability_cvd": float(row["probability_cvd"] or 0),
             "risk_level": row["risk_level"],
+            "effective_risk_level": row["effective_risk_level"],
             "created_at": to_iso(row["created_at"]),
             "external_patient_code": row["external_patient_code"] or "",
         }
@@ -2207,9 +2359,17 @@ def dashboard_stats(
         "totalPatients": total_patients,
         "totalAssessments": total_assessments,
         "riskDistribution": distribution,
+        "pendingReview": int(review_counts["pending_review"]),
+        "highRisk": int(review_counts["high_risk"]),
         "activeModelAccuracy": float((active_model_row or {}).get("accuracy") or 0),
         "recentAssessments": recent,
     }
+
+
+@app.get("/api/live")
+def live() -> Dict[str, str]:
+    """Liveness probe: never touches the database (does not wake Neon compute)."""
+    return {"status": "alive"}
 
 
 @app.get("/api/health")
@@ -2234,17 +2394,3 @@ if __name__ == "__main__":
 
     uvicorn.run("app:app", host=host, port=port, reload=reload_enabled)
 
-
-if __name__ == "__main__":
-    import importlib
-
-    host = os.getenv("APP_HOST", "0.0.0.0")
-    port = int(os.getenv("APP_PORT", "8000"))
-    reload_enabled = os.getenv("APP_RELOAD", "false").lower() == "true"
-    try:
-        uvicorn = importlib.import_module("uvicorn")
-    except ModuleNotFoundError as error:
-        raise RuntimeError(
-            "uvicorn is not installed. Run `pip install -r Back-End/requirements.txt` first."
-        ) from error
-    uvicorn.run(app, host=host, port=port, reload=reload_enabled)

@@ -1,254 +1,111 @@
-import { useEffect, useState } from 'react';
-import { Brain, CheckCircle, Circle, TrendingUp } from 'lucide-react';
-import { getModels } from '../api/client';
-import type { Model } from '../api/types';
+import { getModels } from "../api/client";
+import type { Model } from "../api/types";
+import { Badge, Card, cn } from "../ui";
+import { ErrorCard, Skeleton } from "./dashboard/Panels";
+import { useLoader } from "./dashboard/useLoader";
+import { PageHeader } from "./PageHeader";
+
+const pct = (n: number) => `${Math.round(n * 1000) / 10}%`;
+
+/** "stacked_pipeline" -> "Stacked pipeline". */
+function algorithmLabel(raw: string): string {
+  const text = raw.replace(/_/g, " ").trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "—";
+}
+
+function trainedOn(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function ModelCard({ model }: { model: Model }) {
+  const trained = trainedOn(model.trainedAt);
+  const tiles: Array<[string, string]> = [
+    ["AUC", model.auc.toFixed(3)],
+    ["Recall", pct(model.recall)],
+    ["Precision", pct(model.precision)],
+    ["Accuracy", pct(model.accuracy)],
+    ["F1", model.f1Score.toFixed(3)],
+    ["Algorithm", algorithmLabel(model.algorithm)],
+  ];
+  return (
+    <Card
+      data-testid="model-card"
+      data-active={model.isActive || undefined}
+      className={cn("flex flex-col gap-4 border-2 border-transparent", model.isActive && "!border-[#1f5eff]")}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-[18px] font-bold leading-tight text-[#0b1530]">{model.modelName}</h2>
+          <p className="mt-1 text-[13px] text-[#5b6b85]">
+            {`v${model.modelVersion.replace(/^v/i, "")}`}
+            {trained ? ` · trained ${trained}` : ""}
+          </p>
+        </div>
+        <Badge variant={model.isActive ? "success" : "neutral"}>{model.isActive ? "Active" : "Retired"}</Badge>
+      </div>
+      <dl className="grid grid-cols-2 gap-2.5 min-[481px]:grid-cols-3">
+        {tiles.map(([label, value]) => (
+          <div key={label} className="flex min-w-0 flex-col-reverse rounded-[14px] bg-[#f3f6fc] px-2 py-3 text-center">
+            <dt className="mt-0.5 text-[11.5px] text-[#5b6b85]">{label}</dt>
+            <dd className="truncate text-[16px] font-bold tabular-nums text-[#0b1530]" title={value}>
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {model.isActive && (
+        <button
+          type="button"
+          disabled
+          className="h-[42px] rounded-full bg-[#e6edff] px-5 text-[13.5px] font-semibold text-[#1446d1] opacity-60"
+        >
+          Scoring new encounters
+        </button>
+      )}
+    </Card>
+  );
+}
 
 export function ModelRegistry() {
-  const [models, setModels] = useState<Model[]>([]);
-  const [selectedModel, setSelectedModel] = useState<Model | null>(null);
+  const loaded = useLoader(getModels, "models");
+  const models = loaded.data;
 
-  useEffect(() => {
-    let isMounted = true;
-
-    getModels()
-      .then((loadedModels) => {
-        if (!isMounted) {
-          return;
-        }
-        setModels(loadedModels);
-        setSelectedModel(loadedModels[0] ?? null);
-      })
-      .catch(() => {
-        if (!isMounted) {
-          return;
-        }
-        setModels([]);
-        setSelectedModel(null);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  if (!selectedModel) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h1>Model Registry</h1>
-          <p className="text-gray-600 mt-1">Machine learning models for cardiovascular risk prediction</p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
-          No model data available yet.
-        </div>
-      </div>
+  let body;
+  if (models === null) {
+    body = loaded.error ? (
+      <ErrorCard title="Couldn't load models." onRetry={loaded.reload} />
+    ) : (
+      <Skeleton className="h-[260px] !rounded-[22px]" />
+    );
+  } else if (models.length === 0) {
+    body = (
+      <Card className="mx-auto flex max-w-[560px] flex-col items-center gap-2 py-12 text-center">
+        <h2 className="text-[20px] font-bold text-[#0b1530]">No models registered</h2>
+        <p className="text-[14px] text-[#5b6b85]">A model appears here once it has been loaded for scoring.</p>
+      </Card>
+    );
+  } else {
+    // Active first, then newest.
+    const sorted = [...models].sort(
+      (a, b) => Number(b.isActive) - Number(a.isActive) || b.trainedAt.localeCompare(a.trainedAt)
+    );
+    body = (
+      <ul className="grid grid-cols-[repeat(auto-fit,minmax(min(320px,100%),1fr))] gap-[18px]">
+        {sorted.map((m) => (
+          <li key={m.modelId} className="flex min-w-0 flex-col [&>*]:flex-1">
+            <ModelCard model={m} />
+          </li>
+        ))}
+      </ul>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1>Model Registry</h1>
-        <p className="text-gray-600 mt-1">Machine learning models for cardiovascular risk prediction</p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Models List */}
-        <div className="lg:col-span-1 space-y-3">
-          {models.map((model) => (
-            <button
-              key={model.modelId}
-              onClick={() => setSelectedModel(model)}
-              className={`w-full text-left p-4 rounded-xl border-2 transition-all ${
-                selectedModel.modelId === model.modelId
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Brain className={`w-5 h-5 ${
-                    selectedModel.modelId === model.modelId ? 'text-blue-600' : 'text-gray-600'
-                  }`} />
-                  {model.isActive ? (
-                    <CheckCircle className="w-4 h-4 text-green-500" />
-                  ) : (
-                    <Circle className="w-4 h-4 text-gray-400" />
-                  )}
-                </div>
-                {model.isActive && (
-                  <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
-                    Active
-                  </span>
-                )}
-              </div>
-              <p className="text-sm mb-1">{model.modelName}</p>
-              <p className="text-xs text-gray-600">v{model.modelVersion}</p>
-              <div className="flex items-center gap-2 mt-2">
-                <span className="text-xs text-gray-600">AUC:</span>
-                <span className="text-xs">{(model.auc * 100).toFixed(1)}%</span>
-              </div>
-            </button>
-          ))}
-        </div>
-
-        {/* Model Details */}
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-6">
-          <div className="flex items-start justify-between mb-6">
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <h2>{selectedModel.modelName}</h2>
-                {selectedModel.isActive && (
-                  <span className="px-3 py-1 bg-green-100 text-green-700 text-sm rounded-full">
-                    Active
-                  </span>
-                )}
-              </div>
-              <p className="text-gray-600">Version {selectedModel.modelVersion}</p>
-            </div>
-            {!selectedModel.isActive && (
-              <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm">
-                Activate Model
-              </button>
-            )}
-          </div>
-
-          {/* Model Info */}
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-600 mb-1">Algorithm</p>
-              <p className="text-sm">{selectedModel.algorithm}</p>
-            </div>
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-600 mb-1">Use Case</p>
-              <p className="text-sm capitalize">{selectedModel.useCase.replace(/_/g, ' ')}</p>
-            </div>
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-600 mb-1">Trained</p>
-              <p className="text-sm">{new Date(selectedModel.trainedAt).toLocaleDateString()}</p>
-            </div>
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-600 mb-1">Status</p>
-              <p className="text-sm">{selectedModel.isActive ? 'Active' : 'Inactive'}</p>
-            </div>
-          </div>
-
-          {/* Performance Metrics */}
-          <div className="mb-6">
-            <div className="flex items-center gap-2 mb-4">
-              <TrendingUp className="w-5 h-5 text-blue-600" />
-              <h3 className="text-lg">Performance Metrics</h3>
-            </div>
-            
-            <div className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-gray-600">AUC (Area Under Curve)</span>
-                  <span className="text-sm">{(selectedModel.auc * 100).toFixed(2)}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-3">
-                  <div
-                    className="bg-blue-600 h-3 rounded-full transition-all duration-500"
-                    style={{ width: `${selectedModel.auc * 100}%` }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-gray-600">Accuracy</span>
-                  <span className="text-sm">{(selectedModel.accuracy * 100).toFixed(2)}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-3">
-                  <div
-                    className="bg-green-600 h-3 rounded-full transition-all duration-500"
-                    style={{ width: `${selectedModel.accuracy * 100}%` }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-gray-600">Precision</span>
-                  <span className="text-sm">{(selectedModel.precision * 100).toFixed(2)}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-3">
-                  <div
-                    className="bg-purple-600 h-3 rounded-full transition-all duration-500"
-                    style={{ width: `${selectedModel.precision * 100}%` }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-gray-600">Recall</span>
-                  <span className="text-sm">{(selectedModel.recall * 100).toFixed(2)}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-3">
-                  <div
-                    className="bg-orange-600 h-3 rounded-full transition-all duration-500"
-                    style={{ width: `${selectedModel.recall * 100}%` }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-gray-600">F1 Score</span>
-                  <span className="text-sm">{(selectedModel.f1Score * 100).toFixed(2)}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-3">
-                  <div
-                    className="bg-pink-600 h-3 rounded-full transition-all duration-500"
-                    style={{ width: `${selectedModel.f1Score * 100}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Comparison Table */}
-          <div className="border border-gray-200 rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-2 text-left text-xs text-gray-600 uppercase">Metric</th>
-                  <th className="px-4 py-2 text-right text-xs text-gray-600 uppercase">Value</th>
-                  <th className="px-4 py-2 text-right text-xs text-gray-600 uppercase">Industry Avg</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                <tr>
-                  <td className="px-4 py-2">AUC</td>
-                  <td className="px-4 py-2 text-right">{(selectedModel.auc * 100).toFixed(2)}%</td>
-                  <td className="px-4 py-2 text-right text-gray-600">-</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2">Accuracy</td>
-                  <td className="px-4 py-2 text-right">{(selectedModel.accuracy * 100).toFixed(2)}%</td>
-                  <td className="px-4 py-2 text-right text-gray-600">-</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2">Precision</td>
-                  <td className="px-4 py-2 text-right">{(selectedModel.precision * 100).toFixed(2)}%</td>
-                  <td className="px-4 py-2 text-right text-gray-600">-</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2">Recall</td>
-                  <td className="px-4 py-2 text-right">{(selectedModel.recall * 100).toFixed(2)}%</td>
-                  <td className="px-4 py-2 text-right text-gray-600">-</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2">F1 Score</td>
-                  <td className="px-4 py-2 text-right">{(selectedModel.f1Score * 100).toFixed(2)}%</td>
-                  <td className="px-4 py-2 text-right text-gray-600">-</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+    <div className="flex flex-col gap-5">
+      <PageHeader title="Model registry" subtitle="Only one model scores new encounters at a time" />
+      {body}
+      <p className="text-[12.5px] text-[#5b6b85]">Not calibrated to population prevalence; decision support only.</p>
     </div>
   );
 }

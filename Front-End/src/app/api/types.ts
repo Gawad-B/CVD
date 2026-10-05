@@ -8,7 +8,20 @@ export interface Patient {
   phone: string;
   email: string;
   createdAt: string;
+  lastAssessment?: PatientLastAssessment | null;
 }
+
+export interface PatientLastAssessment {
+  assessmentId: number;
+  createdAt: string;
+  probabilityCvd: number;
+  riskLevel: RiskLevel;
+  effectiveRiskLevel: RiskLevel;
+  reviewStatus: string;
+}
+
+/** "unknown" = the API sent a value this client does not recognise; shown neutrally, never as low. */
+export type RiskLevel = "low" | "medium" | "high" | "unknown";
 
 export interface EncounterFeature {
   featureId: number;
@@ -56,16 +69,94 @@ export interface RiskAssessment {
   encounterId: number;
   patientId: number;
   patientName: string;
+  /** Patient code, sex and age for display; never DOB/contact details. */
+  externalPatientCode?: string;
+  patientSex?: string | null;
+  patientAge?: number | null;
   modelId: number;
   modelName: string;
   probabilityCvd: number;
   predictedLabel: string;
-  riskLevel: "low" | "medium" | "high";
+  riskLevel: RiskLevel;
   assessmentStatus: string;
   reviewStatus: string;
+  reviewedByUsername?: string;
+  reviewedAt?: string;
+  reviewComment?: string;
   recommendation: string;
   createdAt: string;
+  modelVersion?: string;
+  explanation?: AssessmentExplanation;
+  /** Measured heart rate in bpm, when the clinician recorded one (not a model input). */
+  heartRate?: number | null;
+  /** Raw model inputs by NHANES column (detail endpoint only). Numbers are numbers, categoricals strings like "1.0". */
+  inputs?: Record<string, number | string | null>;
+  overrideRiskLevel?: RiskLevel | null;
+  overrideRecommendation?: string | null;
+  overrideReason?: string | null;
+  overriddenByUsername?: string | null;
+  overriddenAt?: string | null;
+  /** Override wins over the model's level. */
+  effectiveRiskLevel: RiskLevel;
+  effectiveRecommendation: string;
+  overrideHistory?: OverrideHistoryEntry[];
 }
+
+export interface OverrideHistoryEntry {
+  riskLevel: RiskLevel | null;
+  recommendation: string | null;
+  reason: string;
+  overriddenByUsername: string;
+  createdAt: string;
+}
+
+export interface OverrideInput {
+  /** Omit to keep the current value, null to clear it. */
+  riskLevel?: RiskLevel | null;
+  recommendation?: string | null;
+  reason: string;
+}
+
+export interface OverrideResult {
+  assessmentId: number;
+  reviewStatus: string;
+  heartRate?: number | null;
+  overrideRiskLevel?: RiskLevel | null;
+  overrideRecommendation?: string | null;
+  overrideReason?: string | null;
+  overriddenByUsername?: string | null;
+  overriddenAt?: string | null;
+  effectiveRiskLevel: RiskLevel;
+  effectiveRecommendation: string;
+}
+
+export interface RiskAssessmentFilters {
+  reviewStatus?: "pending" | "reviewed";
+  limit?: number;
+}
+
+export interface DemoAccount {
+  username: string;
+  password: string;
+  expiresAt: string;
+}
+
+export interface FactorContribution {
+  feature: string;
+  label: string;
+  value: number | string;
+  reference: number | string;
+  delta: number;
+}
+
+export interface AssessmentExplanation {
+  missingInputs: string[];
+  modelVersion?: string;
+  contributions: FactorContribution[];
+  explanationError?: boolean;
+}
+
+export type AuditOutcome = "success" | "failure" | "denied";
 
 export interface AuditLogEntry {
   auditLogId: number;
@@ -75,6 +166,8 @@ export interface AuditLogEntry {
   resourceId: number;
   patientId?: number;
   outcome: string;
+  /** Request path that produced the entry, when recorded. */
+  endpoint?: string;
   ipAddress: string;
   createdAt: string;
 }
@@ -88,6 +181,8 @@ export interface User {
   isActive?: boolean;
   lastLoginAt?: string;
   createdAt?: string;
+  isDemo?: boolean;
+  demoExpiresAt?: string | null;
 }
 
 export interface CreateUserInput {
@@ -139,6 +234,8 @@ export interface RiskAssessmentRequest {
     bpMed?: "yes" | "no";
     cholMed?: "yes" | "no";
     notes?: string;
+    /** Optional measured heart rate, 30-220 bpm. Stored with the assessment, not a model input. */
+    heartRate?: number;
   };
 }
 
@@ -146,6 +243,13 @@ export interface RiskAssessmentResponse {
   probability: number;
   riskLevel: "low" | "medium" | "high";
   recommendation: string;
+  assessmentId?: number;
+  createdAt?: string;
+  heartRate?: number | null;
+  missingInputs?: string[];
+  modelVersion?: string;
+  contributions?: FactorContribution[];
+  explanationError?: boolean;
 }
 
 export interface DashboardStats {
@@ -153,11 +257,16 @@ export interface DashboardStats {
   totalAssessments: number;
   riskDistribution: Record<string, number>;
   activeModelAccuracy: number;
+  /** Assessments awaiting sign-off. */
+  pendingReview: number;
+  /** Assessments whose effective risk level is high. */
+  highRisk: number;
   recentAssessments: Array<{
     id: number;
     patientId: number;
     probabilityCvd: number;
-    riskLevel: "low" | "medium" | "high";
+    riskLevel: RiskLevel;
+    effectiveRiskLevel: RiskLevel;
     createdAt: string;
     externalPatientCode: string;
   }>;

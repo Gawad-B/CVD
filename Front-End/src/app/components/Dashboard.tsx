@@ -1,242 +1,212 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Users, FileText, AlertTriangle, TrendingUp } from 'lucide-react';
-import { Link } from 'react-router';
-import { getDashboardStats, getModels} from '../api/client';
-import type { DashboardStats, Model} from '../api/types';
-import { useAuth } from '../context/AuthContext';
-import { MODELS_ROLES, hasRoleAccess } from '../auth/permissions';
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router";
+import {
+  getDashboardStats,
+  getModels,
+  getRiskAssessmentById,
+  getRiskAssessments,
+  updateRiskAssessmentReviewStatus,
+} from "../api/client";
+import type { OverrideResult, RiskAssessment } from "../api/types";
+import { MODELS_ROLES, hasRoleAccess } from "../auth/permissions";
+import { useAuth } from "../context/AuthContext";
+import { useSearch } from "../context/SearchContext";
+import { Card, buttonClasses } from "../ui";
+import { HeartStage } from "./dashboard/HeartStage";
+import { OverrideModal } from "./dashboard/OverrideModal";
+import {
+  ErrorCard,
+  FactorsCard,
+  ModelCard,
+  OverviewCard,
+  PanelFrame,
+  RecentList,
+  RecommendationCard,
+  Skeleton,
+  VitalsCard,
+  type RecentRow,
+} from "./dashboard/Panels";
+import { matchesQuery, patientMeta } from "./dashboard/logic";
+import { useLoader } from "./dashboard/useLoader";
+
+const GRID =
+  "mt-5 grid grid-cols-1 items-start gap-[18px] min-[1181px]:grid-cols-[minmax(260px,300px)_minmax(0,1fr)_minmax(260px,320px)]";
 
 export function Dashboard() {
-  const {user} = useAuth();
-  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
-  const [models, setModels] = useState<Model[]>([]);
-  const [activeModelAccuracy] = useState(0);
+  const { user } = useAuth();
+  const { query } = useSearch();
+  const [params, setParams] = useSearchParams();
+  const canReview = user?.role !== "auditor";
   const canViewModels = hasRoleAccess(user?.role, MODELS_ROLES);
 
+  const list = useLoader(() => getRiskAssessments({ limit: 50 }), "list");
+  const stats = useLoader(getDashboardStats, "stats");
+  const models = useLoader(getModels, "models", canViewModels);
+
+  const requested = Number(params.get("assessment"));
+  const selectedId = Number.isInteger(requested) && requested > 0 ? requested : null;
+
+  const detail = useLoader(
+    () => getRiskAssessmentById(selectedId as number),
+    selectedId,
+    selectedId != null && list.data !== null,
+  );
+
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [signingId, setSigningId] = useState<number | null>(null);
+  const [signError, setSignError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
+
+  const codeFor = (a: RiskAssessment) => a.externalPatientCode ?? "";
+
+  const rows: RecentRow[] = useMemo(
+    () =>
+      (list.data ?? [])
+        .map((assessment) => ({ assessment, code: assessment.externalPatientCode ?? "" }))
+        .filter((r) => matchesQuery(r.assessment.patientName, r.code, query)),
+    [list.data, query],
+  );
+
+  // Pin the default selection into the URL so a later list refresh can never swap the patient on screen.
+  const needsPin = selectedId == null && list.data !== null && list.data.length > 0;
   useEffect(() => {
-    let isMounted = true;
+    if (!needsPin || !list.data) return;
+    const pick = rows[0]?.assessment ?? list.data[0];
+    setParams({ assessment: String(pick.assessmentId) }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsPin]);
 
-    Promise.all([
-      getDashboardStats(),
-      canViewModels ? getModels() : Promise.resolve<Model[]>([]),
-    ])
-      .then(([stats, loadedModels]) => {
-        if (!isMounted) {
-          return;
-        }
-        setDashboardStats(stats);
-        setModels(loadedModels);
-      })
-      .catch(() => {
-        if (!isMounted) {
-          return;
-        }
-        setDashboardStats(null);
-        setModels([]);
-      });
+  const select = (id: number) => {
+    setSignError(null);
+    setParams({ assessment: String(id) }, { replace: true });
+  };
 
-    return () => {
-      isMounted = false;
-    };
-  }, [canViewModels]);
+  const assessment = detail.data;
+  const refreshAll = () => {
+    detail.reload();
+    list.reload();
+    stats.reload();
+  };
 
-  const totalPatients = dashboardStats?.totalPatients ?? 0;
-  const totalAssessments = dashboardStats?.totalAssessments ?? 0;
-  const distribution = dashboardStats?.riskDistribution ?? {};
-  const highRiskCount = distribution.high ?? 0;
-  const mediumRiskCount = distribution.medium ?? 0;
-  const lowRiskCount = distribution.low ?? 0;
-  const assessmentCount = Math.max(totalAssessments, 1); // Avoid division by zero
-  const recentAssessments = dashboardStats?.recentAssessments ?? [];
-  const activeModel = models.find(m => m.isActive);
-  const modelAccuracy = dashboardStats?.activeModelAccuracy ?? 0;
+  async function signOff(comment: string) {
+    if (!assessment) return;
+    const id = assessment.assessmentId;
+    setSigningId(id);
+    setSignError(null);
+    setNotice(null);
+    try {
+      await updateRiskAssessmentReviewStatus(id, "reviewed", comment || undefined);
+      refreshAll();
+    } catch (e) {
+      setSignError(e instanceof Error && e.message ? e.message : "Could not sign off. Try again.");
+    } finally {
+      setSigningId((cur) => (cur === id ? null : cur));
+    }
+  }
 
-  const stats = [
-    {
-      name: 'Total Patients',
-      value: totalPatients,
-      icon: Users,
-      color: 'bg-blue-500',
-      link: '/patients'
-    },
-    {
-      name: 'Total Assessments',
-      value: totalAssessments,
-      icon: FileText,
-      color: 'bg-green-500',
-      link: '/assessments'
-    },
-    {
-      name: 'High Risk Cases',
-      value: highRiskCount,
-      icon: AlertTriangle,
-      color: 'bg-red-500',
-      link: '/assessments'
-    },
-    {
-      name: 'Active Model Accuracy',
-      value: `${(modelAccuracy * 100).toFixed(1)}%`,
-      icon: TrendingUp,
-      color: 'bg-purple-500',
-      link: canViewModels ? '/models' : '/'
-    },
-  ];
+  function onOverrideSaved(_result: OverrideResult, wasReviewed: boolean) {
+    setOverrideOpen(false);
+    setNotice(
+      wasReviewed
+        ? { id: assessment!.assessmentId, text: "Override saved. The assessment returned to “Pending review”." }
+        : { id: assessment!.assessmentId, text: "Override saved." },
+    );
+    refreshAll();
+  }
+
+  const empty = list.data !== null && list.data.length === 0;
+
+  const statsCard = stats.data ? (
+    <OverviewCard stats={stats.data} />
+  ) : stats.error ? (
+    <ErrorCard title="Couldn't load the overview." onRetry={stats.reload} />
+  ) : (
+    <Skeleton className="h-[260px]" />
+  );
+
+  if (list.data === null && list.error) {
+    return (
+      <div className="mt-5">
+        <h1 className="sr-only">Dashboard</h1>
+        <ErrorCard title="Couldn't load assessments." onRetry={list.reload} />
+      </div>
+    );
+  }
+
+  if (empty) {
+    return (
+      <div className="mt-5">
+        <h1 className="sr-only">Dashboard</h1>
+        <Card className="mx-auto flex max-w-[560px] flex-col items-center gap-3 py-12 text-center">
+          <h2 className="text-[22px] font-bold tracking-[-0.02em] text-[#0b1530]">No assessments yet</h2>
+          <p className="text-[14px] text-[#5b6b85]">Run a risk assessment for a patient and it will show up here.</p>
+          <Link to="/assessments" className={buttonClasses("primary", "md", "mt-2")}>
+            Go to Assessments
+          </Link>
+        </Card>
+      </div>
+    );
+  }
+
+  const model = models.data?.find((m) => m.isActive) ?? null;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1>Dashboard</h1>
-        <p className="text-gray-600 mt-1">Cardiovascular disease risk screening overview</p>
-      </div>
+    <div className={GRID}>
+      <h1 className="sr-only">Dashboard</h1>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((stat) => (
-          <Link
-            key={stat.name}
-            to={stat.link}
-            className="bg-white p-6 rounded-xl border border-gray-200 hover:shadow-lg transition-shadow"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-sm text-gray-600">{stat.name}</p>
-                <p className="text-3xl mt-2">{stat.value}</p>
-              </div>
-              <div className={`${stat.color} p-3 rounded-lg`}>
-                <stat.icon className="w-6 h-6 text-white" />
-              </div>
-            </div>
-          </Link>
-        ))}
-      </div>
+      <PanelFrame>
+        <VitalsCard assessment={assessment} />
+        {list.data !== null && list.error && (
+          <ErrorCard title="Couldn't refresh assessments." onRetry={list.reload} />
+        )}
+        {list.data === null ? (
+          <Skeleton className="h-[320px]" />
+        ) : (
+          <RecentList rows={rows} selectedId={selectedId} onSelect={select} hasQuery={query.trim() !== ""} />
+        )}
+      </PanelFrame>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Risk Distribution */}
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="mb-6">Risk Distribution</h2>
-          <div className="space-y-4">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-600">High Risk</span>
-                <span className="text-sm">{highRiskCount} patients</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-3">
-                <div 
-                  className="bg-red-500 h-3 rounded-full transition-all duration-500"
-                  style={{ width: `${(highRiskCount / assessmentCount) * 100}%` }}
-                />
-              </div>
-            </div>
-            
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-600">Medium Risk</span>
-                <span className="text-sm">{mediumRiskCount} patients</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-3">
-                <div 
-                  className="bg-yellow-500 h-3 rounded-full transition-all duration-500"
-                  style={{ width: `${(mediumRiskCount / assessmentCount) * 100}%` }}
-                />
-              </div>
-            </div>
-            
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-600">Low Risk</span>
-                <span className="text-sm">{lowRiskCount} patients</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-3">
-                <div 
-                  className="bg-green-500 h-3 rounded-full transition-all duration-500"
-                  style={{ width: `${(lowRiskCount / assessmentCount) * 100}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
+      <PanelFrame>
+        {assessment ? (
+          <>
+            <HeartStage
+              assessment={assessment}
+              code={codeFor(assessment) || `Patient #${assessment.patientId}`}
+              meta={patientMeta(assessment)}
+            />
+            <FactorsCard assessment={assessment} />
+          </>
+        ) : detail.error ? (
+          <ErrorCard title="Couldn't load this assessment." onRetry={detail.reload} />
+        ) : (
+          <>
+            <Skeleton className="h-[540px] !rounded-[26px]" />
+            <Skeleton className="h-[160px]" />
+          </>
+        )}
+      </PanelFrame>
 
-        {/* Recent Assessments */}
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h2>Recent Assessments</h2>
-            <Link to="/assessments" className="text-sm text-blue-600 hover:underline">
-              View all
-            </Link>
-          </div>
-          <div className="space-y-3">
-            {recentAssessments.map((assessment) => (
-              <div
-                key={assessment.id}
-                className="flex items-center justify-between p-3 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex-1">
-                  <p className="text-sm">{assessment.externalPatientCode}</p>
-                  <p className="text-xs text-gray-600">
-                    {new Date(assessment.createdAt).toLocaleDateString()}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm">{(assessment.probabilityCvd * 100).toFixed(1)}%</span>
-                  <span
-                    className={`px-3 py-1 rounded-full text-xs ${
-                      assessment.riskLevel === 'high'
-                        ? 'bg-red-100 text-red-700'
-                        : assessment.riskLevel === 'medium'
-                        ? 'bg-yellow-100 text-yellow-700'
-                        : 'bg-green-100 text-green-700'
-                    }`}
-                  >
-                    {assessment.riskLevel}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      <PanelFrame>
+        {statsCard}
+        {assessment ? (
+          <RecommendationCard
+            key={assessment.assessmentId}
+            assessment={assessment}
+            canReview={canReview}
+            signing={signingId === assessment.assessmentId}
+            signError={signError}
+            notice={notice && notice.id === assessment.assessmentId ? notice.text : null}
+            onSignOff={signOff}
+            onOverride={() => setOverrideOpen(true)}
+          />
+        ) : (
+          <Skeleton className="h-[200px]" />
+        )}
+        <ModelCard model={model} assessment={assessment} />
+      </PanelFrame>
 
-      {/* Active Model Info */}
-      {activeModel && (
-        <div className="bg-gradient-to-r from-blue-50 to-cyan-50 rounded-xl border border-blue-200 p-6">
-          <div className="flex items-start justify-between">
-            <div>
-              <h2 className="mb-2">Active Model</h2>
-              <p className="text-lg mb-1">{activeModel.modelName}</p>
-              <p className="text-sm text-gray-600">Version {activeModel.modelVersion} • {activeModel.algorithm}</p>
-            </div>
-            {canViewModels && (
-              <Link
-                to="/models"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
-              >
-                View Details
-              </Link>
-            )}
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mt-6">
-            <div>
-              <p className="text-xs text-gray-600">AUC</p>
-              <p className="text-lg mt-1">{(activeModel.auc * 100).toFixed(1)}%</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-600">Accuracy</p>
-              <p className="text-lg mt-1">{(activeModel.accuracy * 100).toFixed(1)}%</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-600">Precision</p>
-              <p className="text-lg mt-1">{(activeModel.precision * 100).toFixed(1)}%</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-600">Recall</p>
-              <p className="text-lg mt-1">{(activeModel.recall * 100).toFixed(1)}%</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-600">F1 Score</p>
-              <p className="text-lg mt-1">{(activeModel.f1Score * 100).toFixed(1)}%</p>
-            </div>
-          </div>
-        </div>
+      {overrideOpen && assessment && (
+        <OverrideModal assessment={assessment} onClose={() => setOverrideOpen(false)} onSaved={onOverrideSaved} />
       )}
     </div>
   );

@@ -20,7 +20,7 @@ The system consists of:
 ### Back-End
 - FastAPI (Python)
 - PostgreSQL database with psycopg2
-- JWT-based authentication
+- Session-token authentication (hashed tokens in the `sessions` table)
 - Audit logging system
 
 ## Project Structure
@@ -31,7 +31,10 @@ Cardiology Screening System/
 │   ├── src/
 │   │   ├── app/
 │   │   │   ├── api/       # API client layer, types
-│   │   │   ├── components/ # React components
+│   │   │   ├── components/ # Pages and feature components
+│   │   │   ├── landing/    # Public landing page
+│   │   │   ├── heart/      # 3D heart, ECG strip
+│   │   │   ├── ui/         # Shared UI primitives
 │   │   │   ├── context/    # Auth context
 │   │   │   └── routes.tsx  # Router configuration
 │   │   ├── main.tsx        # React entry point
@@ -41,21 +44,66 @@ Cardiology Screening System/
 │   └── vite.config.ts
 ├── Back-End/               # FastAPI application
 │   ├── app.py              # Main API server
-│   ├── requirements.txt    # Python dependencies
-│   ├── model/              # ML model artifacts
+│   ├── phi_crypto.py       # Application-level AES-256-GCM for patient identifiers
+│   ├── requirements.txt    # Runtime dependencies
+│   ├── requirements-dev.txt # Test dependencies (pytest, httpx)
+│   ├── ml/                 # features.py, train.py, inference.py, explain.py
+│   ├── model/              # cvd_pipeline.joblib, feature_schema.json, metrics_ml.json
+│   ├── scripts/            # migrate.py, seed_admin.py, encrypt_patient_data.py, purge_expired_demos.py, test_db.sh
+│   ├── tests/              # pytest suite
 │   └── database/
-│       └── schema.sql      # Database schema
+│       ├── schema.sql      # Base database schema
+│       └── migrations/     # Idempotent NNN_*.sql migrations
 ├── Assets/                 # Project resources
 ├── .gitignore             # Git ignore rules
 └── README.md              # This file
 ```
 
+## User Interface
+
+Public landing page (`/`) and a signed-in app shell. The shell has a top tab bar (Dashboard, Patients, Assessments, plus Models, Users and Audit log for the roles allowed to see them), a notification bell with the count of assessments pending review, and the user menu.
+
+- **Landing page:** hero with a "Try a demo" call to action, how it works, model facts, care-team roles and security. Model numbers (ROC AUC, recall, input count, feature importances) come from `Back-End/model/metrics_ml.json`, copied into the front-end.
+- **Dashboard:** a 3D heart whose colour and beat follow the effective risk level, an ECG strip, patient list with selection, vitals, the model contributions, sign-off, and clinician override. The heart rate is optional and is **not a model input**: a measured value is shown as "Measured"; without one the animation uses an illustrative rate for the risk level and is labelled as such.
+- **Patients:** list, search, add patient (date of birth, sex, contact), patient details with their assessments.
+- **Assessments:** past results and a new-assessment form (compact required inputs plus an optional "More clinical inputs" section, optional heart rate). The result links back to the dashboard heart.
+- **Assessment details:** inputs ("Not recorded" for blanks), estimated inputs, contributions, override and sign-off history.
+- **Models, Users, Audit log:** model registry (admin, doctor), user management with demo tags and deactivate confirmation (admin), filterable audit log with "Load more" (admin, auditor).
+
+### Override semantics and history
+
+A doctor, clinician or admin can override an assessment's risk level and/or recommendation with a reason (`PATCH /api/risk-assessments/{id}/override`). Omitted fields are kept, an explicit `null` clears one, and every request appends a row to `risk_assessment_overrides`, which the details page shows as history. The model's own score and level are never changed; lists and the dashboard show the effective (overridden) level. Every override (level, recommendation or removal) returns a signed-off assessment to "Pending review".
+
+### Demo accounts
+
+"Try a demo" calls the public `POST /api/demo/start`, which creates a **personal sandbox** and signs the visitor straight in via a prefilled login.
+
+- Each demo account is a real user with 6 fictional, synthetic patients scored by the real model (no real patient data). Heart rate is set on some of them.
+- **Isolation:** demo users only see and change patients they own (`patients.owner_user_id`); real data and other demo users' data are invisible to them.
+- **Expiry:** an account lasts 15 days (`DEMO_TTL_DAYS`). After that, login and API calls return a `demo_expired` error and the login page shows "Your 15-day demo has ended." with the contact email (`DEMO_CONTACT_EMAIL`). Demo users have the doctor role (no user management or audit log).
+- **Abuse limits:** `DEMO_MAX_ACTIVE` active demos in total, `DEMO_MAX_PER_HOUR` creations per hour (global), and at most 3 demo accounts *created* per client IP per 24 hours (IPv6 counted per /64). Set `TRUST_PROXY_HEADERS=true` behind a proxy so the real client IP is used.
+- **Cleanup:** `Back-End/scripts/purge_expired_demos.py` deletes demo accounts expired more than 30 days ago, with their sandbox patients and assessments. Audit rows are kept (references cleared), and each `--apply` run writes one audit row (`demo_purge`, with counts).
+
+```bash
+export DATABASE_URL=postgresql://user:password@localhost:5432/cardiology
+python Back-End/scripts/purge_expired_demos.py                  # dry run: prints counts only
+python Back-End/scripts/purge_expired_demos.py --apply          # delete
+python Back-End/scripts/purge_expired_demos.py --grace-days 45  # custom grace period (minimum 30)
+python Back-End/scripts/purge_expired_demos.py --grace-days 7 --force --apply   # allow below the minimum
+```
+
+### Credits
+
+- 3D heart model: "Realistic human heart" by neshallads on [Sketchfab](https://sketchfab.com/3d-models/realistic-human-heart-3f8072336ce94d18b3d0d055a1ece089), licensed CC-BY 4.0. The credit is shown wherever the heart renders (`Front-End/src/app/heart/HeartCredit.tsx`).
+- Landing photographs: [Unsplash](https://unsplash.com/license) (Unsplash License). Per-photo sources: `Front-End/public/landing/CREDITS.md`.
+
 ## Getting Started
 
 ### Prerequisites
 - Node.js 16+ (for Front-End)
-- Python 3.8+ (for Back-End)
-- PostgreSQL 12+ (for database)
+- Python 3.10-3.13 for local installs (scikit-learn 1.6.1 has no 3.14 wheels); Vercel uses 3.12 (for Back-End)
+- PostgreSQL 14+ (for database; migrations use `CREATE OR REPLACE TRIGGER`)
+- Docker (only for running the Back-End tests)
 - npm or yarn (for Front-End dependencies)
 
 ### Front-End Setup
@@ -72,32 +120,50 @@ npm run build        # Build for production
 ```bash
 cd Back-End
 pip install -r requirements.txt
-python app.py        # Start API server (runs on http://localhost:8000)
+cp .env.example .env     # then fill in DATABASE_URL, PATIENT_DATA_KEY, CORS_ORIGINS, ...
+python app.py            # Start API server (http://localhost:8000 by default)
 ```
 
-The API will be available at `http://localhost:8000` with interactive docs at `/docs`.
+The API will be available at `http://localhost:8000` with interactive docs at `/docs`. The server host, port and auto-reload are controlled by `HOST`, `PORT` and `UVICORN_RELOAD` (see [Environment Variables](#environment-variables)). `PATIENT_DATA_KEY` is required at startup.
 
 ### Database Setup
 
-1. Create PostgreSQL database:
+1. Create the database and point the Back-End at it:
 ```bash
 createdb cardiology
-psql cardiology < Back-End/database/schema.sql
+export DATABASE_URL=postgresql://user:password@localhost:5432/cardiology
 ```
 
-2. Ensure the Back-End can connect to PostgreSQL (configure connection in `app.py`)
+2. Apply the schema and all migrations (idempotent, safe to re-run):
+```bash
+python Back-End/scripts/migrate.py
+```
+
+3. Create the first admin user. There is no default admin account. `seed_admin.py` imports the app, so `PATIENT_DATA_KEY` must be set too:
+```bash
+ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='at-least-12-characters' \
+  python Back-End/scripts/seed_admin.py     # ADMIN_USERNAME defaults to "admin"
+```
+
+4. Existing deployments with plaintext patient identifiers: encrypt them in place (see [Data Privacy & Security](#data-privacy--security)). `migrate.py` and `encrypt_patient_data.py` do not read `.env`; `seed_admin.py` imports the app, which loads `Back-End/.env` for any variable you have not exported. Export the variables explicitly so you know which values are used:
+```bash
+export DATABASE_URL=postgresql://user:password@localhost:5432/cardiology
+export PATIENT_DATA_KEY=...   # the same key the API runs with; for a new key use `openssl rand -base64 32` once and back it up
+python Back-End/scripts/encrypt_patient_data.py            # dry run: prints counts only
+python Back-End/scripts/encrypt_patient_data.py --apply    # encrypts rows and clears plaintext
+```
 
 ## Key Features
 
 ### User Management
 - Role-based access control (admin, doctor, clinician, auditor)
 - User CRUD operations with soft-delete
-- JWT authentication with token refresh
+- Session-token authentication; account lockout after repeated failed logins; minimum password length of 12
 - Audit logging for all user operations
 
 ### Patient Management
 - Patient creation and CRUD operations
-- Sensitive data handling (DOB, contact info)
+- Sensitive data handling (DOB, contact info), encrypted by the application before storage
 - Soft-delete with is_active flag
 - Patient search and filtering
 
@@ -106,11 +172,14 @@ psql cardiology < Back-End/database/schema.sql
 - Comprehensive risk assessment form with:
   - **Mandatory fields**: Systolic/diastolic BP, total cholesterol, HDL cholesterol, BMI, smoker status, diabetic status (yes/no/borderline), age (auto-derived from DOB), HbA1c, hs-CRP, sodium, WBC, hemoglobin, platelets, RDW, activity levels, sleep hours, BP/cholesterol medication history
   - **Additional fields**: Custom feature entries for extensibility
-- ML-powered risk prediction using meta-learner model
+- Inputs are range-checked against clinical limits; the age derived from DOB must be 18-120 (the model is adult-only)
+- ML-powered risk prediction using a single stacked pipeline (`Back-End/model/cvd_pipeline.joblib`)
+- Response includes `missingInputs` (fields the model had to impute), `modelVersion`, and per-prediction `contributions`. Contributions describe how sensitive the model is to each input; they are not clinical importance or causal claims
 - Risk score calculation with recommendation mapping
+- Risk assessments are soft-deleted and record the reviewer who set the review status
 
 ### Audit Trail
-- Comprehensive logging of all data modifications
+- Every endpoint that reads or writes patient data writes an `audit_log` row (reads included)
 - User action tracking
 - Timestamp tracking for compliance
 
@@ -118,6 +187,7 @@ psql cardiology < Back-End/database/schema.sql
 
 ### Authentication
 - `POST /api/auth/login` - User login
+- `POST /api/demo/start` - Public: create a personal demo account (see Demo accounts)
 - `POST /api/auth/logout` - User logout
 - `GET /api/auth/me` - Validate current session token and return user profile
 
@@ -143,7 +213,8 @@ psql cardiology < Back-End/database/schema.sql
 - `GET /api/risk-assessments` - List all risk assessments
 - `GET /api/risk-assessments/{assessment_id}` - Get one risk assessment
 - `PATCH /api/risk-assessments/{assessment_id}/review` - Update review status
-- `DELETE /api/risk-assessments/{assessment_id}` - Delete risk assessment
+- `PATCH /api/risk-assessments/{assessment_id}/override` - Override risk level / recommendation (history kept)
+- `DELETE /api/risk-assessments/{assessment_id}` - Soft-delete risk assessment (row kept, hidden from lists)
 - `GET /api/patients/{patient_id}/risk-assessments` - List patient assessments
 - `POST /api/predict` - Get risk prediction
 
@@ -152,7 +223,8 @@ psql cardiology < Back-End/database/schema.sql
 - `GET /api/models/{model_id}` - Get model details
 - `GET /api/audit-log` - List audit logs
 - `GET /api/dashboard/stats` - Dashboard aggregate stats
-- `GET /api/health` - Health check
+- `GET /api/live` - Liveness check (no database access)
+- `GET /api/health` - Readiness check (queries the database)
 
 ## Data Models
 
@@ -182,7 +254,10 @@ psql cardiology < Back-End/database/schema.sql
 ## Data Privacy & Security
 
 - Patient sensitive data (DOB, contact) stored separately from main patient record
+- Patient identifiers are encrypted in the application with AES-256-GCM (`Back-End/phi_crypto.py`) using a key derived from `PATIENT_DATA_KEY` (at least 16 characters, required at startup; use a 32-byte random key, e.g. `openssl rand -base64 32`). Each ciphertext is bound to its patient and column (GCM associated data), and the API refuses patient endpoints with HTTP 503 if the key cannot decrypt existing data. Ciphertext is stored as opaque BYTEA in the `*_enc` columns; the key is never sent to the database
+- **Losing `PATIENT_DATA_KEY` makes patient identifiers unrecoverable: back it up securely.** Do not rotate it without re-encrypting
 - Soft-delete policy preserves audit trail
+- Login lockout: `LOGIN_MAX_ATTEMPTS` (5) failed attempts lock the account for `LOGIN_LOCKOUT_MINUTES` (15); locked attempts return HTTP 429
 - Password storage uses PBKDF2-HMAC-SHA256 with per-user salt and high iteration count
 - Legacy MD5 password hashes are transparently upgraded on successful login
 - Session tokens are stored hashed in the database
@@ -198,57 +273,148 @@ psql cardiology < Back-End/database/schema.sql
 - All state changes logged to browser console (development mode)
 
 ### Backend Development
-- SQLite-based development (configurable)
-- PostgreSQL for production
+- PostgreSQL only (via `psycopg2`, no ORM)
+- Schema changes go in `Back-End/database/migrations/NNN_<name>.sql` and must be idempotent (`IF NOT EXISTS`); `scripts/migrate.py` applies `schema.sql` then every migration
 - Database transactions for data consistency
 - Comprehensive error handling with HTTP status codes
 
 ### Testing
-Currently no automated test suite. Test manually via:
-- Front-End: Browser console and React DevTools
-- Back-End: FastAPI Swagger UI at `/docs` or `curl` requests
+
+Back-End tests run against a throwaway Postgres 16 container (port 55432, user/password/db `cardio_test`):
+
+```bash
+cd Back-End
+pip install -r requirements-dev.txt
+scripts/test_db.sh up        # start the Docker test database
+pytest                       # full suite (includes slow model-training tests)
+pytest -m "not slow"         # skip tests that train models
+pytest -m nodb               # tests that do not need the database
+scripts/test_db.sh down      # remove the container
+```
+
+Front-End (Vitest + Testing Library):
+
+```bash
+cd Front-End
+npm ci
+npm test          # unit and component tests
+npm run lint      # ESLint, must report 0 problems
+npm run build     # production build
+```
 
 ## Environment Variables
 
-### Front-End
-- `VITE_API_BASE_URL` - Backend API URL (example: `http://localhost:8000`)
-- `VITE_API_PROXY_TARGET` - Optional Vite dev proxy target
+Copy `Back-End/.env.example` to `Back-End/.env` and `Front-End/.env.example` to `Front-End/.env`. Never commit real `.env` files.
 
 ### Back-End
-Configure in `app.py`:
-- Database connection string
-- JWT secret key
 
-## Deployment notes (Render + Vercel + Neon)
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | none | PostgreSQL connection URL. Alternatively set `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
+| `PATIENT_DATA_KEY` | none (required) | Key for AES-256-GCM encryption of patient identifiers, at least 16 chars. Back it up: losing it makes identifiers unrecoverable |
+| `DATABASE_URL_UNPOOLED` | none | Direct (non-pooled) URL. `migrate.py`, `seed_admin.py` and `encrypt_patient_data.py` prefer it over `DATABASE_URL`; the API ignores it |
+| `CORS_ORIGINS` | empty (required in production) | Comma-separated exact allowed origins. Empty means no cross-origin access (fail closed); for local dev use `http://localhost:5173` |
+| `CORS_ORIGIN_REGEX` | none | Optional regex, full match, for extra origins. Leave unset in production (see the deployment section) |
+| `TRUST_PROXY_HEADERS` | `false` | `true`/`1`/`yes`: take the client IP from the first `X-Forwarded-For` entry (set on Vercel) |
+| `SESSION_TTL_MINUTES` | `480` | Session lifetime |
+| `PASSWORD_HASH_ITERATIONS` | `600000` | PBKDF2-HMAC-SHA256 iterations |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Failed logins before lockout |
+| `LOGIN_LOCKOUT_MINUTES` | `15` | Lockout duration (HTTP 429) |
+| `LOW_RISK_MAX_PROBABILITY` | `0.30` | Upper probability bound of the low-risk band |
+| `MEDIUM_RISK_MAX_PROBABILITY` | `0.70` | Upper probability bound of the medium-risk band |
+| `MODEL_DIR` | `Back-End/model` | Directory holding `cvd_pipeline.joblib`, `feature_schema.json`, `metrics_ml.json` |
+| `HOST` | `0.0.0.0` | Bind address for `python app.py` |
+| `PORT` | `8000` | Port for `python app.py` |
+| `UVICORN_RELOAD` | `false` | Set to `true` for auto-reload in development |
+| `DEMO_CONTACT_EMAIL` | built-in contact address | Shown on the login page when a demo has expired |
+| `DEMO_MAX_ACTIVE` | `500` | Maximum number of active (unexpired) demo accounts |
+| `DEMO_TTL_DAYS` | `15` | Demo account lifetime in days |
+| `DEMO_MAX_PER_HOUR` | `30` | Maximum demo accounts created per hour |
+| `ADMIN_USERNAME` | `admin` | `seed_admin.py` only |
+| `ADMIN_EMAIL` | none (required by `seed_admin.py`) | `seed_admin.py` only |
+| `ADMIN_PASSWORD` | none (required by `seed_admin.py`) | `seed_admin.py` only, at least 12 chars |
 
-1. **Vercel SPA routing (404 on refresh fix)**
-   - Deploy from `Front-End/` root and keep `Front-End/vercel.json`.
-   - The rewrite rule sends deep links (e.g. `/models`) to `index.html`, so browser refresh works on all routes.
+`Back-End/.env.example` also lists `MODEL_PATH`; the code does not read it (use `MODEL_DIR`).
 
-2. **Frontend production env**
-   - Set `VITE_API_BASE_URL` in Vercel to your Render backend URL (for example: `https://your-backend.onrender.com`).
+### Front-End
 
-3. **Model registry availability in production**
-   - Backend now auto-ensures at least one **active** model row in `model_registry`.
-   - If the table is empty in Neon, a default `CVD Meta Learner` entry is bootstrapped from `Back-End/model/metrics_ml.json`.
+| Variable | Default | Purpose |
+|---|---|---|
+| `VITE_API_BASE_URL` | empty | Backend API URL (example: `http://localhost:8000`) |
+| `VITE_API_PROXY_TARGET` | empty | Optional Vite dev proxy target |
 
-4. **Performance optimizations applied**
-   - Route-level lazy loading via `React.lazy` + `Suspense` to reduce initial JS payload.
-   - Manual vendor chunk splitting in Vite build config for better cache efficiency.
-   - Long-cache headers for static `/assets/*` files via Vercel config.
-- CORS origins
-- Model paths
+## Deploying to Vercel + Neon
+
+Two Vercel projects from the same repository: `cvd-api` (FastAPI, Root Directory `Back-End`) and `cvd-web` (Vite SPA, Root Directory `Front-End`). Vercel builds the API with Python 3.12 (`Back-End/.python-version`) and `Back-End/vercel.json` trims the bundle.
+
+**Optional pre-deploy check:** `Back-End/scripts/verify_vercel_bundle.sh` (needs Docker) installs the requirements in the Lambda Python 3.12 image, applies the `vercel.json` excludes, checks the size against the 500 MB limit, imports the app and scores one row. Set `VERCEL_SUPPORT_LARGE_FUNCTIONS=1` on `cvd-api` only if the bundle ever exceeds 500 MB.
+
+1. **Create the database.** Create a Neon project (or use Vercel, Storage, Neon integration). Pick the Neon region closest to the Vercel function region (default `iad1`, which is AWS us-east-1) to reduce latency. Note both connection strings: the pooled one (host contains `-pooler`) is `DATABASE_URL`, the direct one is `DATABASE_URL_UNPOOLED`.
+
+2. **Migrate and seed from your machine.** `migrate.py` does not read `.env`; `seed_admin.py` imports the app, which loads `Back-End/.env` for any variable you have not exported, so export every variable explicitly. `seed_admin.py` needs `PATIENT_DATA_KEY` too. Generate the key once, copy it into a password manager, then export that value; the same value goes into Vercel, and losing it makes patient identifiers unrecoverable. A fresh database does not need `encrypt_patient_data.py`.
+```bash
+openssl rand -base64 32          # run once, save the output in a password manager
+export DATABASE_URL_UNPOOLED='<direct-neon-url>'
+export PATIENT_DATA_KEY='<the value you just saved>'
+python Back-End/scripts/migrate.py
+ADMIN_USERNAME=admin ADMIN_EMAIL=<you@example.com> ADMIN_PASSWORD='<your-admin-password>' \
+  python Back-End/scripts/seed_admin.py     # password: at least 12 characters
+```
+
+3. **Create the `cvd-api` project.** Root Directory `Back-End`. Confirm the Framework Preset shows "FastAPI"; select it manually if it was not auto-detected. Environment variables:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | Pooled Neon URL |
+| `PATIENT_DATA_KEY` | The exact key used in step 2 |
+| `CORS_ORIGINS` | Required. The exact `cvd-web` production domain (set in step 4), e.g. `https://cvd-web.vercel.app` |
+| `CORS_ORIGIN_REGEX` | Leave unset in production (see warning below) |
+| `TRUST_PROXY_HEADERS` | `true` |
+| `SESSION_TTL_MINUTES` | Optional (default `480`) |
+
+   **Recommendation: leave `CORS_ORIGIN_REGEX` unset in production** and set `CORS_ORIGINS` to the exact `cvd-web` URL. Any regex over `*.vercel.app` can be matched by a project someone else names to fit it (for example `cvd-web-x-<team-slug>`). Only for preview testing, you may use the narrower commit-preview form `^https://cvd-web-[a-z0-9]{9}-<team-slug>\.vercel\.app$`. This reduces but does not eliminate spoofing risk, so also enable Vercel Deployment Protection on preview deployments. Impact is limited because auth uses Bearer tokens held by the `cvd-web` origin, not cookies. Never use an unpinned pattern such as `https://cvd-web-.*\.vercel\.app`. `DATABASE_URL_UNPOOLED` is only needed locally for the scripts.
+   Use each project's **production domain** (Project, Settings, Domains), for example `https://cvd-api.vercel.app`, everywhere a URL is needed below. Do not use a per-deployment URL: those are protected by Vercel Deployment Protection by default and answer 401, which the browser reports as a CORS error.
+   If you use the Neon-Vercel integration with preview branching, preview deployments get a branched database created from the main branch: run migrations and seed before enabling previews.
+
+4. **Create the `cvd-web` project.** Root Directory `Front-End`, Framework Preset Vite, env `VITE_API_BASE_URL=https://<cvd-api-production-domain>` (e.g. `https://cvd-api.vercel.app`). Vite inlines it at build time, so redeploy `cvd-web` after setting or changing it. Then set `CORS_ORIGINS` on `cvd-api` to the `cvd-web` production domain and redeploy `cvd-api`.
+   - **Preview deployments hit production data.** If `VITE_API_BASE_URL` is set for all environments, every `cvd-web` preview calls the production `cvd-api` and therefore the production Neon database (real patient data). Scope `VITE_API_BASE_URL` to Production only. If previews are needed, point the Preview environment at a separate preview/staging `cvd-api` with its own Neon branch.
+   - `Front-End/vercel.json` rewrites every route to `index.html` (fixes 404 on refresh), caches `/assets/*` immutably and sets `X-Content-Type-Options`, `Referrer-Policy` and `X-Frame-Options` headers.
+
+5. **Smoke test.** `curl https://<cvd-api-production-domain>/api/health` (DB readiness; use `/api/live` for uptime monitors, since it does not touch the database and so does not wake Neon compute), then log in as the admin and change the admin password right away (User Management, edit your user, enter a new password of at least 12 characters). Changing your own password revokes your sessions, so you are logged out and must log in again. Then create a patient and a risk assessment. On first use the backend upserts the deployed pipeline as the single active `model_registry` row.
+
+Interactive API docs (`/docs`, `/redoc`, `/openapi.json`) are disabled automatically on Vercel (when `VERCEL` is set) and unchanged locally.
+
+Performance notes: route-level lazy loading (`React.lazy` + `Suspense`), manual vendor chunk splitting in the Vite build, long-cache headers for `/assets/*`.
+
+### Upgrading an existing deployment
+
+Releases that add database migrations (here 004 and 005: demo sandbox, clinical fields, override history) must be migrated **before** the new API serves traffic: the new `cvd-api` returns HTTP 500 on authenticated calls until the migrations are applied. Order matters:
+
+```bash
+export DATABASE_URL_UNPOOLED='<direct-neon-url>'     # the direct (non-pooler) connection string
+python Back-End/scripts/migrate.py                    # applies 004 and 005; safe to re-run
+```
+
+1. Run `migrate.py` as above.
+2. Redeploy `cvd-api`.
+3. Redeploy `cvd-web`.
+
+Migration 004 re-points some foreign keys to `ON DELETE SET NULL` **by constraint name**. If Neon named an existing one differently, the old `NO ACTION` key would stay in place next to the new one and demo purging would fail on audit rows. So before migrating, in `psql` run `\d audit_log` and `\d risk_assessments` and confirm the user references are named `audit_log_user_id_fkey`, `risk_assessments_reviewed_by_fkey` and `risk_assessments_deleted_by_fkey` (`risk_assessments_overridden_by_fkey` is created by the migration itself). After migrating, the same keys should show `ON DELETE SET NULL`.
+
+Deployment environment checklist:
+
+- `cvd-api`: `TRUST_PROXY_HEADERS=true` (required for the demo per-IP limit to see the real client behind Vercel; without it every visitor shares one IP), `PATIENT_DATA_KEY` (unchanged), `CORS_ORIGINS` (exact `cvd-web` production domain), `DATABASE_URL` (pooled), and the optional `DEMO_*` variables (`DEMO_TTL_DAYS`, `DEMO_MAX_ACTIVE`, `DEMO_MAX_PER_HOUR`, `DEMO_CONTACT_EMAIL`).
+- `cvd-web`: `VITE_API_BASE_URL` scoped to **Production** only (previews must not call production data).
 
 ## Known Limitations
 
-- No automated tests (TBD)
-- ML model integration requires pre-trained artifacts in `Back-End/model/`
+- ML model integration requires the artifacts in `Back-End/model/` (regenerate with `python -m ml.train`)
+- The model is adult-only (derived age 18-120) and trained on a small (670-row), class-balanced dataset; see Model section
 - Age auto-calculation requires patient DOB in patient_sensitive_data
 - Diabetic "borderline" maps to 0.5 in feature space
 
 ## Future Enhancements
 
-- Add automated unit/integration tests
 - Implement WebSocket for real-time updates
 - Add export to PDF/CSV functionality
 - Mobile app (React Native)
@@ -260,24 +426,24 @@ Configure in `app.py`:
 This project follows an engineering-first, data-driven approach to cardiology risk screening:
 
 - Data collection: capture structured clinical values and optional free-text notes during encounters to ensure reproducible inputs for ML models.
-- Deterministic feature building: encounter data is validated and normalized (units, ranges, missing-value encodings) before model preprocessing.
-- Preprocessing + meta-learner: a serialized preprocessor converts raw clinical fields into model-ready features; a meta-learner combines base-model outputs to produce a calibrated risk probability.
-- Recommendation mapping: ML probabilities are mapped to actionable recommendations via rule-driven CDS rules stored in `cds_rules` and configurable thresholds.
+- Deterministic feature building: encounter data is validated against clinical ranges and normalized (units, coded values, missing-value encodings) in `ml/features.py` / `ml/inference.py` before prediction.
+- Single stacked pipeline: one serialized scikit-learn pipeline (`cvd_pipeline.joblib`) does imputation, encoding and the stacked ensemble, so training and serving share identical preprocessing.
+- Recommendation mapping: probabilities are mapped to Low / Medium / High via `LOW_RISK_MAX_PROBABILITY` and `MEDIUM_RISK_MAX_PROBABILITY`, and to recommendations via rules in `cds_rules`.
 - Auditable inference: every prediction stores the model id, input feature values, probability, and recommendation for traceability and post-hoc analysis.
 
 ## System Architecture (High Level)
 
 The system is a three-tier web application with clear separation of concerns:
 
-- Front-End (React SPA): UI components, routing, auth context, and a centralized API client that normalizes shapes and injects JWT tokens.
+- Front-End (React SPA): UI components, routing, auth context, and a centralized API client that normalizes shapes and injects the bearer session token.
 - Back-End (FastAPI): REST API surface for CRUD operations, authentication, ML inference endpoints (`/api/predict`, `/api/risk-assessments`), and audit logging.
 - Persistence (PostgreSQL): normalized relational schema for identities, patients, encounters, model registry, assessment features, and audit logs.
 
 Integration points and key flows:
 
 - API Client → Back-End: front-end sends normalized requests; `client.ts` converts camelCase ↔ snake_case and attaches `Authorization: Bearer <token>`.
-- Risk Prediction Flow: `POST /api/predict` loads the active model from `model_registry`, merges request values with encounter defaults, runs preprocessor → meta-learner → maps probability to a recommendation via `cds_rules`, and returns/stores the result.
-- Model Artifacts: serialized artifacts live in `Back-End/model/` (preprocessor, base models, meta-learner). The back-end loads these at runtime or per-request based on `model_registry` configuration.
+- Risk Prediction Flow: `POST /api/predict` loads the active model from `model_registry`, merges request values with encounter defaults, runs the stacked pipeline → maps probability to a recommendation via `cds_rules`, and returns/stores the result.
+- Model Artifacts: serialized artifacts live in `Back-End/model/` (`cvd_pipeline.joblib`, `feature_schema.json`, `metrics_ml.json`). The back-end loads them once per process from `MODEL_DIR`.
 
 ## Data Flow & Storage
 
@@ -285,23 +451,44 @@ Integration points and key flows:
 - Feature storage: raw input feature values are stored in `assessment_feature_values` to allow auditing and model retraining.
 - Model registry: active/training models and metadata are tracked in `model_registry` so inference uses the correct artifact and versioning.
 
-## ML Inference Details
+## Model
 
-- Preprocessing: numeric scaling, categorical encoding, and missing-value handling are performed by `preprocessor_ml.joblib`.
-- Ensemble/meta-learner: base models (LR, RF, XGB, LGBM) provide complementary signals; `meta_learner.joblib` weights and calibrates them to output a final probability.
-- Reproducibility: each stored assessment records `model_id`, `model_version`, and artifact checksums when available.
+- Pipeline: preprocessing plus a stacked ensemble of base models (logistic regression, random forest, XGBoost, LightGBM) with a meta-learner, in one joblib file. Seed is 42 everywhere; base models use `n_jobs=-1`, and retraining reproduces results to about 1e-16.
+- Retrain from `Back-End/` (reads `model/traindata.csv` and `model/testdata.csv`, rewrites the three artifacts):
+
+```bash
+cd Back-End
+python -m ml.train
+```
+
+- The decision threshold is chosen from out-of-fold predictions on the training set only; the test set is evaluated once. `model/cvd_ml_fulltrain.ipynb` is historical and superseded by `ml/train.py`.
+- Current held-out test metrics (`model/metrics_ml.json`, model version 2.0.0, 536 train / 134 test rows):
+
+| Metric | Value |
+|---|---|
+| ROC AUC | 0.898 (95% CI 0.843-0.943) |
+| Out-of-fold AUC (train) | 0.867 |
+| Brier score | 0.136 |
+| Decision threshold | 0.44 |
+| Accuracy / precision / recall / specificity at threshold | 0.806 / 0.759 / 0.896 / 0.716 |
+
+- **Prevalence caveat:** the dataset is class-balanced (about 50% prevalence), so probabilities are not calibrated to a real clinical population and should not be read as absolute risk. The test set is small, hence the wide AUC interval.
+- **Known limitations:** Diabetes=Yes can lower the estimate for some high-risk profiles (likely treatment confounding in NHANES, where diagnosed diabetics are treated). Scores are not calibrated to population prevalence and are shown in the UI as a "Model score", not an absolute risk. The activity inputs follow NHANES semantics: `vigorousActivityMinutes` and `moderateActivityMinutes` are session counts per unit (PAD810Q/PAD790Q), `sedentaryMinutes` is minutes per moderate session (PAD800) and `sedentaryMinutesAlt` is sedentary minutes per day (PAD680); the API names are kept for compatibility.
+- Per-prediction `contributions` show model sensitivity to each input, not clinical importance. The tool supports screening and is not a diagnosis.
+- Each stored assessment records `model_id`; the active version is tracked in `model_registry`.
 
 ## Security, Privacy & Compliance
 
 - Sensitive separation: PII and sensitive patient attributes are kept in `patient_sensitive_data` separate from main patient records.
+- Encryption at rest: patient identifiers are encrypted in the application (AES-256-GCM, key derived from `PATIENT_DATA_KEY`, min 16 chars, required at startup) and stored as opaque BYTEA in the `*_enc` columns; the key is never sent to the database. `scripts/seed_admin.py` imports the app, so it also needs `PATIENT_DATA_KEY` set. **Losing `PATIENT_DATA_KEY` makes patient identifiers unrecoverable: back it up securely.** Migrate legacy plaintext rows with `python scripts/encrypt_patient_data.py --apply` (dry-run by default).
 - Access control: role-based authorization is enforced server-side; UI hides unauthorized routes using `Layout.tsx` role gating.
-- Auditability: all write operations append entries to `audit_log` including user, timestamp, operation, and affected resource id.
+- Auditability: every read or write of patient data appends an `audit_log` entry (user, timestamp, operation, resource id). Risk assessments are soft-deleted and record the reviewer.
 - Injection protection: all DB access uses parameterized queries via `psycopg2` to mitigate SQL injection.
 
 ## Deployment & Operational Notes
 
-- Environment variables: configure DB connection, JWT secret, CORS origins, and model paths in `app.py` or a deployment env manager.
-- Model updates: when deploying new model artifacts, update `model_registry` and restart the back-end (or implement a hot-reload endpoint) to pick up the new artifact.
+- Environment variables: set them in the deployment environment (see the table above); `PATIENT_DATA_KEY` and `DATABASE_URL` are mandatory.
+- Model updates: replace the artifacts in `Back-End/model/` and restart the back-end; the registry row is upserted automatically on first use.
 - Backups & DR: schedule regular PostgreSQL backups and retain `model/` artifacts in a versioned artifact store.
 - Monitoring: surface request/endpoint errors and inference latencies; log model-version with every prediction for monitoring drift.
 

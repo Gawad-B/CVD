@@ -1,20 +1,10 @@
-import { defineConfig, loadEnv } from 'vite'
+import { loadEnv } from 'vite'
+import { defineConfig } from 'vitest/config'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 
 
-function figmaAssetResolver() {
-  return {
-    name: 'figma-asset-resolver',
-    resolveId(id) {
-      if (id.startsWith('figma:asset/')) {
-        const filename = id.replace('figma:asset/', '')
-        return path.resolve(__dirname, 'src/assets', filename)
-      }
-    },
-  }
-}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -22,9 +12,6 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [
-      figmaAssetResolver(),
-      // The React and Tailwind plugins are both required for Make, even if
-      // Tailwind is not being actively used – do not remove them
       react(),
       tailwindcss(),
     ],
@@ -49,11 +36,18 @@ export default defineConfig(({ mode }) => {
         output: {
           manualChunks: {
             "vendor-react": ["react", "react-dom", "react-router"],
-            "vendor-ui": ["@mui/material", "@mui/icons-material", "lucide-react"],
-            "vendor-charts": ["recharts"],
+            "vendor-ui": ["lucide-react"],
+            "vendor-three": ["three"],
           },
         },
       },
+    },
+
+    test: {
+      environment: 'jsdom',
+      globals: true,
+      setupFiles: ['./src/test/setup.ts'],
+      css: false,
     },
 
     // File types to support raw imports. Never add .css, .tsx, or .ts files to this.

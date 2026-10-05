@@ -1,5 +1,12 @@
 import type {
   AuditLogEntry,
+  AuditOutcome,
+  DemoAccount,
+  OverrideInput,
+  OverrideResult,
+  OverrideHistoryEntry,
+  RiskAssessmentFilters,
+  RiskLevel,
   CreateEncounterInput,
   CreateUserInput,
   DashboardStats,
@@ -13,6 +20,9 @@ import type {
   User,
 } from "./types";
 import { getAuthToken } from "../context/AuthContext";
+import { notifySessionExpired, parseApiError } from "./errors";
+
+export { ApiError, parseApiError } from "./errors";
 
 const rawApiBaseUrl = (import.meta as any).env?.VITE_API_BASE_URL;
 const API_BASE_URL = typeof rawApiBaseUrl === "string" ? rawApiBaseUrl.replace(/\/$/, "") : "";
@@ -28,13 +38,18 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers,
     ...init,
+    headers,
   });
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(body || `Request failed: ${response.status}`);
+    const error = parseApiError(response.status, body);
+    // An expired demo token on any authenticated call ends the session (login handles its own 403).
+    if (error.isDemoExpired && token && !path.startsWith("/api/auth/login")) {
+      notifySessionExpired(error);
+    }
+    throw error;
   }
 
   if (response.status === 204) {
@@ -62,6 +77,29 @@ function mapPatient(raw: any): Patient {
     phone: String(raw.phone ?? ""),
     email: String(raw.email ?? ""),
     createdAt: String(raw.createdAt ?? raw.created_at ?? new Date().toISOString()),
+    lastAssessment: mapLastAssessment(raw.lastAssessment ?? raw.last_assessment),
+  };
+}
+
+/** Unknown or missing values map to "unknown" (never silently to "low"); `fallback` applies only when absent. */
+export function asRiskLevel(value: unknown, fallback: RiskLevel = "unknown"): RiskLevel {
+  if (value === "low" || value === "medium" || value === "high" || value === "unknown") return value;
+  if ((value === undefined || value === null) && fallback !== "unknown") return fallback;
+  return "unknown";
+}
+
+function mapLastAssessment(raw: any): Patient["lastAssessment"] {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const riskLevel = asRiskLevel(raw.riskLevel ?? raw.risk_level);
+  return {
+    assessmentId: Number(raw.assessmentId ?? raw.assessment_id ?? 0),
+    createdAt: String(raw.createdAt ?? raw.created_at ?? ""),
+    probabilityCvd: Number(raw.probabilityCvd ?? raw.probability_cvd ?? 0),
+    riskLevel,
+    effectiveRiskLevel: asRiskLevel(raw.effectiveRiskLevel ?? raw.effective_risk_level, riskLevel),
+    reviewStatus: String(raw.reviewStatus ?? raw.review_status ?? "pending"),
   };
 }
 
@@ -98,21 +136,95 @@ function mapModel(raw: any): Model {
   };
 }
 
+function mapExplanation(raw: any): RiskAssessment["explanation"] {
+  if (!raw || typeof raw !== "object" || Object.keys(raw).length === 0) {
+    return undefined;
+  }
+  return {
+    missingInputs: Array.isArray(raw.missingInputs) ? raw.missingInputs.map(String) : [],
+    modelVersion: raw.modelVersion != null ? String(raw.modelVersion) : undefined,
+    contributions: (Array.isArray(raw.contributions) ? raw.contributions : [])
+      .map((item: any) => ({ ...item, delta: Number(item?.delta) }))
+      .filter((item: any) => Number.isFinite(item.delta)),
+    explanationError: raw.explanationError === true,
+  };
+}
+
+function nullableString(value: unknown): string | null {
+  return value == null || value === "" ? null : String(value);
+}
+
+function mapHistory(raw: any): OverrideHistoryEntry[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  return raw.map((row: any) => ({
+    riskLevel: row.risk_level ?? row.riskLevel ? asRiskLevel(row.risk_level ?? row.riskLevel) : null,
+    recommendation: nullableString(row.recommendation),
+    reason: String(row.reason ?? ""),
+    overriddenByUsername: String(row.overridden_by_username ?? row.overriddenByUsername ?? ""),
+    createdAt: String(row.created_at ?? row.createdAt ?? ""),
+  }));
+}
+
+function mapInputs(raw: any): RiskAssessment["inputs"] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  return raw as Record<string, number | string | null>;
+}
+
+function optionalNumber(value: unknown): number | null {
+  if (value == null || value === "") {
+    return null;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function mapOverrideFields(raw: any) {
+  const overrideRiskLevel = raw.overrideRiskLevel ?? raw.override_risk_level;
+  return {
+    heartRate: optionalNumber(raw.heartRate ?? raw.heart_rate_bpm ?? raw.heart_rate),
+    overrideRiskLevel: overrideRiskLevel ? asRiskLevel(overrideRiskLevel) : null,
+    overrideRecommendation: nullableString(raw.overrideRecommendation ?? raw.override_recommendation),
+    overrideReason: nullableString(raw.overrideReason ?? raw.override_reason),
+    overriddenByUsername: nullableString(raw.overriddenByUsername ?? raw.overridden_by_username),
+    overriddenAt: nullableString(raw.overriddenAt ?? raw.overridden_at),
+  };
+}
+
 function mapRiskAssessment(raw: any): RiskAssessment {
+  const modelVersion = raw.modelVersion ?? raw.model_version;
+  const riskLevel = asRiskLevel(raw.riskLevel ?? raw.risk_level);
+  const recommendation = String(raw.recommendation ?? raw.recommendation_text ?? "");
   return {
     assessmentId: Number(raw.assessmentId ?? raw.assessment_id ?? 0),
     encounterId: Number(raw.encounterId ?? raw.encounter_id ?? 0),
     patientId: Number(raw.patientId ?? raw.patient_id ?? 0),
     patientName: String(raw.patientName ?? raw.patient_name ?? `Patient ${Number(raw.patientId ?? raw.patient_id ?? 0)}`),
+    externalPatientCode: String(raw.externalPatientCode ?? raw.external_patient_code ?? ""),
+    patientSex: nullableString(raw.patientSex ?? raw.patient_sex),
+    patientAge: optionalNumber(raw.patientAge ?? raw.patient_age),
     modelId: Number(raw.modelId ?? raw.model_id ?? 0),
     modelName: String(raw.modelName ?? raw.model_name ?? ""),
     probabilityCvd: Number(raw.probabilityCvd ?? raw.probability_cvd ?? 0),
     predictedLabel: String(raw.predictedLabel ?? raw.predicted_label ?? ""),
-    riskLevel: (raw.riskLevel ?? raw.risk_level ?? "low") as RiskAssessment["riskLevel"],
+    riskLevel,
     assessmentStatus: String(raw.assessmentStatus ?? raw.assessment_status ?? ""),
     reviewStatus: String(raw.reviewStatus ?? raw.review_status ?? ""),
-    recommendation: String(raw.recommendation ?? raw.recommendation_text ?? ""),
+    reviewedByUsername: (raw.reviewedByUsername ?? raw.reviewed_by_username) || undefined,
+    reviewedAt: (raw.reviewedAt ?? raw.reviewed_at) || undefined,
+    reviewComment: (raw.reviewComment ?? raw.review_comment) || undefined,
+    recommendation,
     createdAt: String(raw.createdAt ?? raw.created_at ?? new Date().toISOString()),
+    modelVersion: modelVersion ? String(modelVersion) : undefined,
+    explanation: mapExplanation(raw.explanation),
+    ...mapOverrideFields(raw),
+    effectiveRiskLevel: asRiskLevel(raw.effectiveRiskLevel ?? raw.effective_risk_level, riskLevel),
+    effectiveRecommendation: String(raw.effectiveRecommendation ?? raw.effective_recommendation ?? recommendation),
+    inputs: mapInputs(raw.inputs),
+    overrideHistory: mapHistory(raw.overrideHistory ?? raw.override_history),
   };
 }
 
@@ -123,8 +235,9 @@ function mapAuditLog(raw: any): AuditLogEntry {
     actionType: String(raw.actionType ?? raw.action_type ?? "read"),
     resourceType: String(raw.resourceType ?? raw.resource_type ?? ""),
     resourceId: Number(raw.resourceId ?? raw.resource_id ?? 0),
-    patientId: raw.patientId ?? raw.patient_id,
+    patientId: raw.patientId ?? raw.patient_id ?? undefined,
     outcome: String(raw.outcome ?? "success"),
+    endpoint: String(raw.endpoint ?? ""),
     ipAddress: String(raw.ipAddress ?? raw.ip_address ?? ""),
     createdAt: String(raw.createdAt ?? raw.created_at ?? new Date().toISOString()),
   };
@@ -140,6 +253,8 @@ function mapUser(raw: any): User {
     isActive: raw.isActive ?? raw.is_active,
     lastLoginAt: raw.lastLoginAt ?? raw.last_login_at,
     createdAt: raw.createdAt ?? raw.created_at,
+    isDemo: Boolean(raw.isDemo ?? raw.is_demo),
+    demoExpiresAt: raw.demoExpiresAt ?? raw.demo_expires_at ?? null,
   };
 }
 
@@ -148,13 +263,19 @@ export async function getPatients(): Promise<Patient[]> {
   return asArray<any>(data).map(mapPatient);
 }
 
+export async function getPatient(patientId: number): Promise<Patient> {
+  const data = await fetchJson<any>(`/api/patients/${patientId}`);
+  return mapPatient(data);
+}
+
 export async function createPatient(payload: {
   firstName: string;
   lastName: string;
   dateOfBirth: string;
   sex: string;
-  email: string;
-  phone: string;
+  email?: string;
+  phone?: string;
+  externalPatientCode?: string;
 }): Promise<Patient> {
   const data = await fetchJson<any>("/api/patients", {
     method: "POST",
@@ -206,8 +327,16 @@ export async function getModels(): Promise<Model[]> {
   return asArray<any>(data).map(mapModel);
 }
 
-export async function getRiskAssessments(): Promise<RiskAssessment[]> {
-  const data = await fetchJson<any[]>("/api/risk-assessments");
+export async function getRiskAssessments(filters: RiskAssessmentFilters = {}): Promise<RiskAssessment[]> {
+  const params = new URLSearchParams();
+  if (filters.reviewStatus) {
+    params.set("review_status", filters.reviewStatus);
+  }
+  if (filters.limit != null) {
+    params.set("limit", String(filters.limit));
+  }
+  const query = params.toString();
+  const data = await fetchJson<any[]>(`/api/risk-assessments${query ? `?${query}` : ""}`);
   return asArray<any>(data).map(mapRiskAssessment);
 }
 
@@ -216,14 +345,52 @@ export async function getRiskAssessmentById(assessmentId: number): Promise<RiskA
   return mapRiskAssessment(data);
 }
 
-export async function updateRiskAssessmentReviewStatus(assessmentId: number, reviewStatus: "pending" | "reviewed") {
+export async function updateRiskAssessmentReviewStatus(
+  assessmentId: number,
+  reviewStatus: "pending" | "reviewed",
+  reviewComment?: string
+) {
   return fetchJson<{ assessment_id: number; review_status: string; assessment_status: string }>(
     `/api/risk-assessments/${assessmentId}/review`,
     {
       method: "PATCH",
-      body: JSON.stringify({ reviewStatus }),
+      body: JSON.stringify({ reviewStatus, ...(reviewComment ? { reviewComment } : {}) }),
     }
   );
+}
+
+export async function overrideRiskAssessment(assessmentId: number, input: OverrideInput): Promise<OverrideResult> {
+  // Merge semantics on the server: omitted keeps, explicit null clears.
+  const body: Record<string, unknown> = { reason: input.reason };
+  if ("riskLevel" in input) {
+    body.riskLevel = input.riskLevel;
+  }
+  if ("recommendation" in input) {
+    body.recommendation = input.recommendation;
+  }
+  const data = await fetchJson<any>(`/api/risk-assessments/${assessmentId}/override`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  const fields = mapOverrideFields(data);
+  const effective = data.effective_risk_level ?? data.effectiveRiskLevel;
+  return {
+    assessmentId: Number(data.assessment_id ?? data.assessmentId ?? assessmentId),
+    reviewStatus: String(data.review_status ?? data.reviewStatus ?? "pending"),
+    ...fields,
+    effectiveRiskLevel: asRiskLevel(effective, fields.overrideRiskLevel ?? "low"),
+    effectiveRecommendation: String(data.effective_recommendation ?? data.effectiveRecommendation ?? ""),
+  };
+}
+
+export async function startDemo(): Promise<DemoAccount> {
+  // Public endpoint: no token is sent (none exists for visitors).
+  const data = await fetchJson<any>("/api/demo/start", { method: "POST" });
+  return {
+    username: String(data.username ?? ""),
+    password: String(data.password ?? ""),
+    expiresAt: String(data.expiresAt ?? data.expires_at ?? ""),
+  };
 }
 
 export async function deleteRiskAssessment(assessmentId: number): Promise<void> {
@@ -249,8 +416,22 @@ export async function submitRiskAssessment(input: RiskAssessmentRequest): Promis
   });
 }
 
-export async function getAuditLogEntries(): Promise<AuditLogEntry[]> {
-  const data = await fetchJson<any[]>("/api/audit-log");
+export async function getAuditLogEntries(
+  outcome?: AuditOutcome,
+  page: { limit?: number; offset?: number } = {}
+): Promise<AuditLogEntry[]> {
+  const params = new URLSearchParams();
+  if (outcome) {
+    params.set("outcome", outcome);
+  }
+  if (page.limit != null) {
+    params.set("limit", String(page.limit));
+  }
+  if (page.offset) {
+    params.set("offset", String(page.offset));
+  }
+  const query = params.toString();
+  const data = await fetchJson<any[]>(`/api/audit-log${query ? `?${query}` : ""}`);
   return asArray<any>(data).map(mapAuditLog);
 }
 
@@ -266,11 +447,17 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     totalAssessments: Number(data.totalAssessments ?? data.total_assessments ?? 0),
     riskDistribution: data.riskDistribution ?? data.risk_distribution ?? {},
     activeModelAccuracy: Number(data.activeModelAccuracy ?? data.active_model_accuracy ?? 0),
+    pendingReview: Number(data.pendingReview ?? data.pending_review ?? 0),
+    highRisk: Number(data.highRisk ?? data.high_risk ?? 0),
     recentAssessments: (data.recentAssessments ?? data.recent_assessments ?? []).map((row: any) => ({
       id: Number(row.id ?? 0),
       patientId: Number(row.patient_id ?? row.patientId ?? 0),
       probabilityCvd: Number(row.probability_cvd ?? row.probabilityCvd ?? 0),
-      riskLevel: (row.risk_level ?? row.riskLevel ?? "low"),
+      riskLevel: asRiskLevel(row.risk_level ?? row.riskLevel),
+      effectiveRiskLevel: asRiskLevel(
+        row.effective_risk_level ?? row.effectiveRiskLevel,
+        asRiskLevel(row.risk_level ?? row.riskLevel)
+      ),
       createdAt: String(row.created_at ?? row.createdAt ?? ""),
       externalPatientCode: String(row.external_patient_code ?? row.externalPatientCode ?? ""),
     })),

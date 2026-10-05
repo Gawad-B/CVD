@@ -1,145 +1,130 @@
-import { useState } from 'react';
-import { X } from 'lucide-react';
+import { useState, type FormEvent } from "react";
+import { createPatient } from "../api/client";
+import type { Patient } from "../api/types";
+import { Button, Field, Input, Modal, Select } from "../ui";
+import { ageFromDob, dobProblem, todayIso } from "./dateOfBirth";
 
 interface AddPatientModalProps {
-  isOpen: boolean;
+  open: boolean;
   onClose: () => void;
-  onAdd: (patient: any) => void;
+  onCreated: (patient: Patient) => void;
 }
 
-export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps) {
-  const [formData, setFormData] = useState({
-    firstName: '',
-    lastName: '',
-    dateOfBirth: '',
-    sex: 'male' as 'male' | 'female',
-    email: '',
-    phone: '',
-  });
+interface Errors {
+  name?: string;
+  sex?: string;
+  dob?: string;
+}
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+/** Split "Mary Ann Smith" on the last space: first "Mary Ann", last "Smith". Needs at least two words. */
+export function splitFullName(fullName: string): { firstName: string; lastName: string } | null {
+  const words = fullName.trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2) return null;
+  return { firstName: words.slice(0, -1).join(" "), lastName: words[words.length - 1] };
+}
 
-    onAdd(formData);
-    onClose();
-    setFormData({
-      firstName: '',
-      lastName: '',
-      dateOfBirth: '',
-      sex: 'male',
-      email: '',
-      phone: '',
-    });
-  };
+function Form({ onClose, onCreated }: Omit<AddPatientModalProps, "open">) {
+  const [fullName, setFullName] = useState("");
+  const [sex, setSex] = useState("");
+  const [dob, setDob] = useState("");
+  const [code, setCode] = useState("");
+  const [errors, setErrors] = useState<Errors>({});
+  const [submitError, setSubmitError] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  if (!isOpen) return null;
+  const age = ageFromDob(dob);
+  // Show the live age problem as soon as a full date is typed; other errors wait for submit.
+  const dobError = (dob ? dobProblem(dob) : errors.dob) ?? undefined;
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (saving) return;
+    const name = splitFullName(fullName);
+    const next: Errors = {};
+    if (!name) next.name = "Enter a first and last name.";
+    if (!sex) next.sex = "Select a sex.";
+    const dobIssue = dobProblem(dob);
+    if (dobIssue) next.dob = dobIssue;
+    setErrors(next);
+    setSubmitError("");
+    if (!name || !sex || dobIssue) return;
+
+    setSaving(true);
+    try {
+      const created = await createPatient({
+        ...name,
+        sex,
+        dateOfBirth: dob,
+        externalPatientCode: code.trim() || undefined,
+      });
+      onCreated(created);
+      onClose();
+    } catch (error) {
+      setSubmitError(error instanceof Error && error.message ? error.message : "Could not add the patient. Try again.");
+      setSaving(false);
+    }
+  }
 
   return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-          <h2>Add New Patient</h2>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm mb-2">First Name *</label>
-              <input
-                type="text"
-                value={formData.firstName}
-                onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                placeholder="John"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-2">Last Name *</label>
-              <input
-                type="text"
-                value={formData.lastName}
-                onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                placeholder="Doe"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-2">Date of Birth *</label>
-              <input
-                type="date"
-                value={formData.dateOfBirth}
-                onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                placeholder="mm/dd/yyyy"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-2">Sex *</label>
-              <select
-                value={formData.sex}
-                onChange={(e) => setFormData({ ...formData, sex: e.target.value as 'male' | 'female' })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                required
-              >
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm mb-2">Email *</label>
-              <input
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                placeholder="john.doe@email.com"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-2">Phone *</label>
-              <input
-                type="tel"
-                value={formData.phone}
-                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                placeholder="(555) 123-4567"
-                required
-              />
-            </div>
-          </div>
-
-          <div className="flex gap-3 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Add Patient
-            </button>
-          </div>
-        </form>
+    <form onSubmit={submit} noValidate aria-busy={saving} className="mt-5 flex flex-col gap-4">
+      <Field label="Full name" error={errors.name}>
+        {(a) => (
+          <Input
+            {...a}
+            value={fullName}
+            autoComplete="off"
+            placeholder="First and last name"
+            onChange={(e) => {
+              setFullName(e.target.value);
+              setErrors((prev) => ({ ...prev, name: undefined }));
+            }}
+          />
+        )}
+      </Field>
+      <Field label="Sex" error={errors.sex}>
+        {(a) => (
+          <Select {...a} value={sex} onChange={(e) => {
+              setSex(e.target.value);
+              setErrors((prev) => ({ ...prev, sex: undefined }));
+            }}>
+            <option value="">Select…</option>
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+          </Select>
+        )}
+      </Field>
+      <Field
+        label="Date of birth"
+        error={dobError}
+        hint={age !== null && !dobError ? `Age ${age}` : "Adults only (18–120 years)"}
+      >
+        {(a) => <Input {...a} type="date" max={todayIso()} value={dob} onChange={(e) => setDob(e.target.value)} />}
+      </Field>
+      <Field label="Patient code (optional)" hint="Optional identifier shown in lists and search">
+        {(a) => <Input {...a} value={code} autoComplete="off" onChange={(e) => setCode(e.target.value)} />}
+      </Field>
+      {submitError && (
+        <p role="alert" className="rounded-[12px] bg-[#fee2e2] px-3.5 py-2.5 text-[13px] text-[#b91c1c]">
+          {submitError}
+        </p>
+      )}
+      <div className="mt-1 flex justify-end gap-2.5">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={saving}>
+          {saving ? "Adding…" : "Add patient"}
+        </Button>
       </div>
-    </div>
+    </form>
+  );
+}
+
+export function AddPatientModal({ open, onClose, onCreated }: AddPatientModalProps) {
+  return (
+    <Modal open={open} onClose={onClose} title="Add patient">
+      {/* Mounted only while open, so every opening starts from an empty form. */}
+      <Form onClose={onClose} onCreated={onCreated} />
+    </Modal>
   );
 }

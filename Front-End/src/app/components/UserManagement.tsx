@@ -1,486 +1,352 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Search, Plus, Edit, Trash2, Shield, CheckCircle, XCircle } from 'lucide-react';
-import { createUser, deleteUser, getUsers, updateUser } from '../api/client';
-import type { User } from '../api/types';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Plus } from "lucide-react";
+import { createUser, getUsers, updateUser } from "../api/client";
+import type { UpdateUserInput, User } from "../api/types";
+import { useAuth } from "../context/AuthContext";
+import { Avatar, Badge, Button, Card, ConfirmModal, Field, Input, Modal, Select, Switch } from "../ui";
+import { ErrorCard, Skeleton } from "./dashboard/Panels";
+import { formatDate } from "./dashboard/logic";
+import { PageHeader } from "./PageHeader";
 
-export function UserManagement() {
-  const roleOptions: User['role'][] = ['admin', 'doctor', 'clinician', 'auditor'];
-  const roleFilters = ['all', ...roleOptions];
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filterRole, setFilterRole] = useState<string>('all');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [users, setUsers] = useState<User[]>([]);
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [isEditOpen, setIsEditOpen] = useState(false);
-  const [editingUserId, setEditingUserId] = useState<number | null>(null);
-  const [errorMessage, setErrorMessage] = useState('');
-  const [formData, setFormData] = useState({
-    username: '',
-    email: '',
-    role: 'clinician' as User['role'],
-    password: '',
-  });
-  const [editFormData, setEditFormData] = useState({
-    username: '',
-    email: '',
-    role: 'clinician' as User['role'],
-    isActive: true,
-  });
+const ROLES: User["role"][] = ["admin", "doctor", "clinician", "auditor"];
+const roleLabel = (role: string) => role.charAt(0).toUpperCase() + role.slice(1);
+const MIN_PASSWORD = 12;
 
-  useEffect(() => {
-    let isMounted = true;
+const TH = "px-4 py-3 text-left text-[12px] font-semibold text-[#5b6b85]";
+const TD = "px-4 py-3 align-middle";
 
-    getUsers()
-      .then((loadedUsers) => {
-        if (isMounted) {
-          setUsers(loadedUsers);
-        }
-      })
-      .catch(() => {
-        if (isMounted) {
-          setUsers([]);
-        }
-      });
+function errorText(e: unknown, fallback: string): string {
+  return e instanceof Error && e.message ? e.message : fallback;
+}
 
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+function lastSignIn(iso: string | undefined): string {
+  if (!iso) return "Never";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Never";
+  return `${formatDate(iso)}, ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+}
 
-  const filteredUsers = users.filter(user => {
-    const matchesSearch = 
-      user.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    const matchesRole = filterRole === 'all' || user.role === filterRole;
-    const matchesStatus = filterStatus === 'all' || 
-      (filterStatus === 'active' && user.isActive) ||
-      (filterStatus === 'inactive' && !user.isActive);
+function RoleSelect({ value, onChange, disabled, hint }: { value: User["role"]; onChange: (r: User["role"]) => void; disabled?: boolean; hint?: string }) {
+  return (
+    <Field label="Role" hint={hint}>
+      {(c) => (
+        <Select {...c} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as User["role"])}>
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              {roleLabel(r)}
+            </option>
+          ))}
+        </Select>
+      )}
+    </Field>
+  );
+}
 
-    return matchesSearch && matchesRole && matchesStatus;
-  });
+function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: (user: User) => void }) {
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<User["role"]>("clinician");
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | undefined>();
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const roleCounts = useMemo(() => {
-    return roleOptions.reduce<Record<string, number>>((acc, role) => {
-      acc[role] = users.filter(u => u.role === role).length;
-      return acc;
-    }, {});
-  }, [roleOptions, users]);
-
-  const handleCreateUser = async (event: React.FormEvent) => {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    setErrorMessage('');
-    try {
-      const createdUser = await createUser({
-        username: formData.username.trim(),
-        email: formData.email.trim(),
-        role: formData.role,
-        password: formData.password,
-      });
-      setUsers((current) => [createdUser, ...current]);
-      setIsCreateOpen(false);
-      setFormData({
-        username: '',
-        email: '',
-        role: 'clinician',
-        password: '',
-      });
-    } catch (error) {
-      if (error instanceof Error) {
-        setErrorMessage(error.message || 'Failed to create user.');
-      } else {
-        setErrorMessage('Failed to create user.');
-      }
-    }
-  };
-
-  const handleEditClick = (user: User) => {
-    setErrorMessage('');
-    setEditingUserId(user.userId);
-    setEditFormData({
-      username: user.username,
-      email: user.email,
-      role: user.role,
-      isActive: Boolean(user.isActive),
-    });
-    setIsEditOpen(true);
-  };
-
-  const handleEditUser = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (editingUserId === null) {
+    setError(null);
+    if (!username.trim() || !email.trim()) {
+      setError("Username and email are required.");
       return;
     }
-    setErrorMessage('');
-    try {
-      const updatedUser = await updateUser(editingUserId, {
-        username: editFormData.username.trim(),
-        email: editFormData.email.trim(),
-        role: editFormData.role,
-        isActive: editFormData.isActive,
-      });
-      setUsers((current) => current.map((user) => (user.userId === editingUserId ? updatedUser : user)));
-      setIsEditOpen(false);
-      setEditingUserId(null);
-    } catch (error) {
-      if (error instanceof Error) {
-        setErrorMessage(error.message || 'Failed to update user.');
-      } else {
-        setErrorMessage('Failed to update user.');
-      }
-    }
-  };
-
-  const handleDeleteUser = async (user: User) => {
-    setErrorMessage('');
-    const shouldDelete = window.confirm(`Deactivate user "${user.username}"?`);
-    if (!shouldDelete) {
+    if (password.length < MIN_PASSWORD) {
+      setPasswordError(`Use at least ${MIN_PASSWORD} characters.`);
       return;
     }
+    setPasswordError(undefined);
+    setSaving(true);
     try {
-      await deleteUser(user.userId);
-      setUsers((current) =>
-        current.map((existingUser) =>
-          existingUser.userId === user.userId ? { ...existingUser, isActive: false } : existingUser
-        )
-      );
-    } catch (error) {
-      if (error instanceof Error) {
-        setErrorMessage(error.message || 'Failed to deactivate user.');
-      } else {
-        setErrorMessage('Failed to deactivate user.');
-      }
+      onCreated(await createUser({ username: username.trim(), email: email.trim(), role, password }));
+    } catch (e) {
+      setError(errorText(e, "Could not create the user."));
+      setSaving(false);
     }
-  };
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <Shield className="w-8 h-8 text-blue-600" />
-          <div>
-            <h1>User Management</h1>
-            <p className="text-gray-600 mt-1">{filteredUsers.length} users</p>
-          </div>
+    <Modal open onClose={onClose} title="Create user" className="max-w-[460px]">
+      <form onSubmit={submit} noValidate className="mt-5 flex flex-col gap-4">
+        <Field label="Username">{(c) => <Input {...c} value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />}</Field>
+        <Field label="Email">{(c) => <Input {...c} type="email" value={email} autoComplete="off" onChange={(e) => setEmail(e.target.value)} />}</Field>
+        <RoleSelect value={role} onChange={setRole} />
+        <Field label="Password" error={passwordError} hint={`At least ${MIN_PASSWORD} characters.`}>
+          {(c) => <Input {...c} type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />}
+        </Field>
+        {error && (
+          <p role="alert" className="text-[13px] font-semibold text-[#b91c1c]">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? "Creating…" : "Create user"}
+          </Button>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            setErrorMessage('');
-            setIsCreateOpen(true);
-          }}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+      </form>
+    </Modal>
+  );
+}
+
+function EditUserModal({ user, isSelf, onClose, onSaved }: { user: User; isSelf: boolean; onClose: () => void; onSaved: (user: User) => void }) {
+  const [username, setUsername] = useState(user.username);
+  const [email, setEmail] = useState(user.email);
+  const [role, setRole] = useState<User["role"]>(user.role);
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | undefined>();
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const isDemo = Boolean(user.isDemo);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    if (password && password.length < MIN_PASSWORD) {
+      setPasswordError(`Use at least ${MIN_PASSWORD} characters, or leave it blank.`);
+      return;
+    }
+    setPasswordError(undefined);
+    // Role and password revoke the user's sessions server-side, so send only what changed.
+    const changes: UpdateUserInput = {};
+    if (username.trim() !== user.username) changes.username = username.trim();
+    if (email.trim() !== user.email) changes.email = email.trim();
+    if (role !== user.role) changes.role = role;
+    if (password) changes.password = password;
+    if (Object.keys(changes).length === 0) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      onSaved(await updateUser(user.userId, changes));
+    } catch (e) {
+      setError(errorText(e, "Could not save the changes."));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Edit user" className="max-w-[460px]">
+      <form onSubmit={submit} noValidate className="mt-5 flex flex-col gap-4">
+        {isSelf && (
+          <p role="note" className="rounded-[12px] bg-[#fef3c7] px-3 py-2 text-[12.5px] font-semibold text-[#b45309]">
+            You are editing your own account. Changing your role or password signs you out of all sessions.
+          </p>
+        )}
+        <Field label="Username">{(c) => <Input {...c} value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />}</Field>
+        <Field label="Email">{(c) => <Input {...c} type="email" value={email} autoComplete="off" onChange={(e) => setEmail(e.target.value)} />}</Field>
+        <RoleSelect
+          value={role}
+          onChange={setRole}
+          disabled={isDemo || isSelf}
+          hint={isDemo ? "Demo accounts cannot change role" : isSelf ? "You can't change your own role" : undefined}
+        />
+        <Field
+          label="New password (optional)"
+          error={passwordError}
+          hint={`At least ${MIN_PASSWORD} characters. Leave blank to keep the current password. Changing it signs the user out of all sessions.`}
         >
-          <Plus className="w-5 h-5" />
-          <span>Add User</span>
-        </button>
-      </div>
-
-      {isCreateOpen && (
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <form onSubmit={handleCreateUser} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Username</label>
-              <input
-                type="text"
-                value={formData.username}
-                onChange={(e) => setFormData((current) => ({ ...current, username: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Email</label>
-              <input
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData((current) => ({ ...current, email: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Role</label>
-              <select
-                value={formData.role}
-                onChange={(e) => setFormData((current) => ({ ...current, role: e.target.value as User['role'] }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              >
-                <option value="admin">Admin</option>
-                <option value="doctor">Doctor</option>
-                <option value="clinician">Clinician</option>
-                <option value="auditor">Auditor</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Password</label>
-              <input
-                type="password"
-                minLength={6}
-                value={formData.password}
-                onChange={(e) => setFormData((current) => ({ ...current, password: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                required
-              />
-            </div>
-            <div className="md:col-span-2 flex items-center gap-2">
-              <button
-                type="submit"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Create User
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsCreateOpen(false)}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
+          {(c) => <Input {...c} type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />}
+        </Field>
+        {error && (
+          <p role="alert" className="text-[13px] font-semibold text-[#b91c1c]">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? "Saving…" : "Save changes"}
+          </Button>
         </div>
-      )}
+      </form>
+    </Modal>
+  );
+}
 
-      {isEditOpen && (
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <form onSubmit={handleEditUser} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Username</label>
-              <input
-                type="text"
-                value={editFormData.username}
-                onChange={(e) => setEditFormData((current) => ({ ...current, username: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Email</label>
-              <input
-                type="email"
-                value={editFormData.email}
-                onChange={(e) => setEditFormData((current) => ({ ...current, email: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Role</label>
-              <select
-                value={editFormData.role}
-                onChange={(e) => setEditFormData((current) => ({ ...current, role: e.target.value as User['role'] }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              >
-                <option value="admin">Admin</option>
-                <option value="doctor">Doctor</option>
-                <option value="clinician">Clinician</option>
-                <option value="auditor">Auditor</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Status</label>
-              <select
-                value={editFormData.isActive ? 'active' : 'inactive'}
-                onChange={(e) => setEditFormData((current) => ({ ...current, isActive: e.target.value === 'active' }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              >
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </div>
-            <div className="md:col-span-2 flex items-center gap-2">
-              <button
-                type="submit"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Save Changes
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsEditOpen(false);
-                  setEditingUserId(null);
-                }}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+export function UserManagement() {
+  const { user: me } = useAuth();
+  const [users, setUsers] = useState<User[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pending, setPending] = useState<Set<number>>(new Set());
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<User | null>(null);
+  const [deactivating, setDeactivating] = useState<User | null>(null);
+  const alive = useRef(true);
 
-      {errorMessage && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {errorMessage}
-        </div>
-      )}
+  const load = useCallback(() => {
+    setLoadError(false);
+    getUsers().then(
+      (list) => alive.current && setUsers(list),
+      () => alive.current && setLoadError(true)
+    );
+  }, []);
 
-      {/* Filters */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by name, username, or email..."
-              className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            />
-          </div>
+  useEffect(() => {
+    alive.current = true;
+    load();
+    return () => {
+      alive.current = false;
+    };
+  }, [load]);
 
-          <div>
-            <select
-              value={filterRole}
-              onChange={(e) => setFilterRole(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            >
-              {roleFilters.map(role => (
-                <option key={role} value={role}>
-                  {role === 'all' ? 'All Roles' : role.charAt(0).toUpperCase() + role.slice(1)}
-                </option>
-              ))}
-            </select>
-          </div>
+  const replace = (updated: User) => setUsers((cur) => (cur ?? []).map((u) => (u.userId === updated.userId ? updated : u)));
 
-          <div>
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </div>
-        </div>
-      </div>
+  async function toggleAccess(target: User, next: boolean) {
+    setActionError(null);
+    setPending((p) => new Set(p).add(target.userId));
+    try {
+      replace(await updateUser(target.userId, { isActive: next }));
+    } catch (e) {
+      setActionError(errorText(e, "Could not change access."));
+    } finally {
+      setPending((p) => {
+        const copy = new Set(p);
+        copy.delete(target.userId);
+        return copy;
+      });
+    }
+  }
 
-      {/* Role Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {roleOptions.map(role => (
-          <div key={role} className="bg-white border border-gray-200 rounded-xl p-4">
-            <p className="text-sm text-gray-600 capitalize mb-1">{role}s</p>
-            <p className="text-2xl">{roleCounts[role] ?? 0}</p>
-          </div>
-        ))}
-      </div>
+  const addButton = (
+    <Button onClick={() => setCreating(true)}>
+      <Plus className="h-4 w-4" aria-hidden />
+      Create user
+    </Button>
+  );
 
-      {/* Users Table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">
-                  User
-                </th>
-                <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">
-                  Role
-                </th>
-                <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">
-                  Last Login
-                </th>
-                <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">
-                  Created
-                </th>
-                <th className="px-6 py-3 text-right text-xs text-gray-600 uppercase tracking-wider">
-                  Actions
+  let body;
+  if (users === null) {
+    body = loadError ? <ErrorCard title="Couldn't load users." onRetry={load} /> : <Skeleton className="h-[320px] !rounded-[22px]" />;
+  } else {
+    body = (
+      <Card className="!p-0">
+        <div className="relative overflow-x-auto rounded-[22px]" tabIndex={0} role="region" aria-label="Users table">
+          <table className="w-full min-w-[820px] border-collapse text-[14px]">
+            <thead>
+              <tr className="border-b border-[#e6ebf4]">
+                <th scope="col" className={TH}>User</th>
+                <th scope="col" className={TH}>Role</th>
+                <th scope="col" className={TH}>Last sign-in</th>
+                <th scope="col" className={TH}>Access</th>
+                <th scope="col" className={TH}>
+                  <span className="sr-only">Actions</span>
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
-              {filteredUsers.map((user) => (
-                <tr key={user.userId} className="hover:bg-gray-50">
-                  <td className="px-6 py-4">
-                    <div>
-                      <p className="text-sm">{user.fullName}</p>
-                      <p className="text-xs text-gray-600">{user.username}</p>
-                      <p className="text-xs text-gray-500">{user.email}</p>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={`inline-flex px-3 py-1 rounded-full text-xs capitalize ${
-                      user.role === 'admin' ? 'bg-purple-100 text-purple-700' :
-                      user.role === 'doctor' ? 'bg-blue-100 text-blue-700' :
-                      user.role === 'clinician' ? 'bg-green-100 text-green-700' :
-                      user.role === 'auditor' ? 'bg-orange-100 text-orange-700' :
-                      'bg-gray-100 text-gray-700'
-                    }`}>
-                      {user.role}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4">
-                    {user.isActive ? (
-                      <span className="flex items-center gap-2 text-sm text-green-700">
-                        <CheckCircle className="w-4 h-4" />
-                        <span>Active</span>
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-2 text-sm text-gray-500">
-                        <XCircle className="w-4 h-4" />
-                        <span>Inactive</span>
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-600">
-                    {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-600">
-                    {new Date(user.createdAt).toLocaleDateString()}
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleEditClick(user)}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+            <tbody>
+              {users.map((u) => {
+                const display = u.fullName || u.username;
+                const isSelf = me?.userId === u.userId;
+                const active = u.isActive !== false;
+                return (
+                  <tr key={u.userId} className="border-b border-[#e6ebf4] last:border-b-0 hover:bg-[#f6f8fc]">
+                    <td className={TD}>
+                      <div className="flex items-center gap-3">
+                        <Avatar name={display} size={38} />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-[14px] font-semibold text-[#0b1530]">{display}</span>
+                            {u.isDemo && (
+                              <Badge variant="medium">
+                                {u.demoExpiresAt ? `Demo · ${new Date(u.demoExpiresAt).getTime() <= Date.now() ? "expired" : "expires"} ${formatDate(u.demoExpiresAt)}` : "Demo"}
+                              </Badge>
+                            )}
+                          </div>
+                          <span className="block text-[12px] text-[#5b6b85]">{u.email}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className={TD}>
+                      <Badge variant={u.role} className="capitalize">{u.role}</Badge>
+                    </td>
+                    <td className={`${TD} tabular-nums text-[#33405a]`}>{lastSignIn(u.lastLoginAt)}</td>
+                    <td className={TD}>
+                      <span
+                        className="inline-flex items-center gap-2.5"
+                        title={isSelf ? "You can't deactivate your own account" : undefined}
                       >
-                        <Edit className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteUser(user)}
-                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        <Switch
+                          checked={active}
+                          label={`Access for ${display}`}
+                          disabled={isSelf || pending.has(u.userId)}
+                          onChange={(next) => (next ? void toggleAccess(u, true) : setDeactivating(u))}
+                        />
+                        <span className="text-[12.5px] text-[#5b6b85]">{isSelf ? "You" : active ? "Active" : "Inactive"}</span>
+                      </span>
+                    </td>
+                    <td className={`${TD} text-right`}>
+                      <Button variant="secondary" size="sm" aria-label={`Edit ${display}`} onClick={() => setEditing(u)}>
+                        Edit
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+          {users.length === 0 && <p className="px-4 py-8 text-center text-[13px] text-[#5b6b85]">No users yet.</p>}
         </div>
+      </Card>
+    );
+  }
 
-        {filteredUsers.length === 0 && (
-          <div className="text-center py-12">
-            <Search className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <p className="text-gray-600">No users found</p>
-            <p className="text-sm text-gray-500 mt-1">Try adjusting your filters</p>
-          </div>
-        )}
-      </div>
-
-      {/* Security Info */}
-      <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
-        <div className="flex items-start gap-3">
-          <Shield className="w-5 h-5 text-yellow-600 mt-0.5" />
-          <div>
-            <p className="text-sm">
-              Users with access to patient data must complete HIPAA training and sign compliance agreements.
-              Multi-factor authentication (MFA) is required for all clinical and administrative users.
-            </p>
-          </div>
-        </div>
-      </div>
+  return (
+    <div className="flex flex-col gap-5">
+      <PageHeader title="Users" subtitle="Who can sign in and what they can see" action={addButton} />
+      {actionError && (
+        <p role="alert" className="rounded-[12px] bg-[#fee2e2] px-4 py-3 text-[13px] font-semibold text-[#b91c1c]">
+          {actionError}
+        </p>
+      )}
+      {body}
+      {creating && (
+        <CreateUserModal
+          onClose={() => setCreating(false)}
+          onCreated={(created) => {
+            setUsers((cur) => [created, ...(cur ?? [])]);
+            setCreating(false);
+          }}
+        />
+      )}
+      <ConfirmModal
+        open={deactivating !== null}
+        title="Deactivate user?"
+        message={`Deactivate ${deactivating ? deactivating.fullName || deactivating.username : ""}? They will be signed out immediately.`}
+        confirmLabel="Deactivate"
+        danger
+        onConfirm={async () => {
+          const target = deactivating;
+          setDeactivating(null);
+          if (target) await toggleAccess(target, false);
+        }}
+        onClose={() => setDeactivating(null)}
+      />
+      {editing && (
+        <EditUserModal
+          user={editing}
+          isSelf={me?.userId === editing.userId}
+          onClose={() => setEditing(null)}
+          onSaved={(updated) => {
+            replace(updated);
+            setEditing(null);
+          }}
+        />
+      )}
     </div>
   );
 }

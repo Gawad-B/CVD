@@ -108,3 +108,12 @@ env/
 # Back-End/model/metrics_ml.json
 
 .github
+!Back-End/database/*.sql
+!Back-End/database/migrations/*.sql
+
+# Local planning artifacts
+
+# Design handoff sources and archives (not part of the app)
+/Dashboard/
+/Landing page design built/
+*.zip
