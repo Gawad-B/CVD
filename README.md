@@ -48,7 +48,7 @@ Cardiology Screening System/
 │   ├── requirements.txt    # Runtime dependencies
 │   ├── requirements-dev.txt # Test dependencies (pytest, httpx)
 │   ├── ml/                 # features.py, train.py, inference.py, explain.py
-│   ├── model/              # cvd_pipeline.joblib, feature_schema.json, metrics_ml.json
+│   ├── model/              # notebook export (preprocessor + 4 base models + meta-learner), feature_schema.json, metrics_ml.json
 │   ├── scripts/            # migrate.py, seed_admin.py, encrypt_patient_data.py, purge_expired_demos.py, test_db.sh
 │   ├── tests/              # pytest suite
 │   └── database/
@@ -63,7 +63,7 @@ Cardiology Screening System/
 
 Public landing page (`/`) and a signed-in app shell. The shell has a top tab bar (Dashboard, Patients, Assessments, plus Models, Users and Audit log for the roles allowed to see them), a notification bell with the count of assessments pending review, and the user menu.
 
-- **Landing page:** hero with a "Try a demo" call to action, how it works, model facts, care-team roles and security. Model numbers (ROC AUC, recall, input count, feature importances) come from `Back-End/model/metrics_ml.json`, copied into the front-end.
+- **Landing page:** hero with a "Try a demo" call to action, how it works, model facts, care-team roles and security. Model numbers (accuracy, ROC AUC, recall, precision, feature importances) come from `Back-End/model/metrics_ml.json` and the tree models' importances, copied into the front-end.
 - **Dashboard:** a 3D heart whose colour and beat follow the effective risk level, an ECG strip, patient list with selection, vitals, the model contributions, sign-off, and clinician override. The heart rate is optional and is **not a model input**: a measured value is shown as "Measured"; without one the animation uses an illustrative rate for the risk level and is labelled as such.
 - **Patients:** list, search, add patient (date of birth, sex, contact), patient details with their assessments.
 - **Assessments:** past results and a new-assessment form (compact required inputs plus an optional "More clinical inputs" section, optional heart rate). The result links back to the dashboard heart.
@@ -173,7 +173,7 @@ python Back-End/scripts/encrypt_patient_data.py --apply    # encrypts rows and c
   - **Mandatory fields**: Systolic/diastolic BP, total cholesterol, HDL cholesterol, BMI, smoker status, diabetic status (yes/no/borderline), age (auto-derived from DOB), HbA1c, hs-CRP, sodium, WBC, hemoglobin, platelets, RDW, activity levels, sleep hours, BP/cholesterol medication history
   - **Additional fields**: Custom feature entries for extensibility
 - Inputs are range-checked against clinical limits; the age derived from DOB must be 18-120 (the model is adult-only)
-- ML-powered risk prediction using a single stacked pipeline (`Back-End/model/cvd_pipeline.joblib`)
+- ML-powered risk prediction using a stacked ensemble (XGBoost, LightGBM, random forest, logistic regression and a logistic meta-learner)
 - Response includes `missingInputs` (fields the model had to impute), `modelVersion`, and per-prediction `contributions`. Contributions describe how sensitive the model is to each input; they are not clinical importance or causal claims
 - Risk score calculation with recommendation mapping
 - Risk assessments are soft-deleted and record the reviewer who set the review status
@@ -322,7 +322,7 @@ Copy `Back-End/.env.example` to `Back-End/.env` and `Front-End/.env.example` to 
 | `LOGIN_LOCKOUT_MINUTES` | `15` | Lockout duration (HTTP 429) |
 | `LOW_RISK_MAX_PROBABILITY` | `0.30` | Upper probability bound of the low-risk band |
 | `MEDIUM_RISK_MAX_PROBABILITY` | `0.70` | Upper probability bound of the medium-risk band |
-| `MODEL_DIR` | `Back-End/model` | Directory holding `cvd_pipeline.joblib`, `feature_schema.json`, `metrics_ml.json` |
+| `MODEL_DIR` | `Back-End/model` | Directory holding the model files, `feature_schema.json`, `metrics_ml.json` |
 | `HOST` | `0.0.0.0` | Bind address for `python app.py` |
 | `PORT` | `8000` | Port for `python app.py` |
 | `UVICORN_RELOAD` | `false` | Set to `true` for auto-reload in development |
@@ -427,7 +427,7 @@ This project follows an engineering-first, data-driven approach to cardiology ri
 
 - Data collection: capture structured clinical values and optional free-text notes during encounters to ensure reproducible inputs for ML models.
 - Deterministic feature building: encounter data is validated against clinical ranges and normalized (units, coded values, missing-value encodings) in `ml/features.py` / `ml/inference.py` before prediction.
-- Single stacked pipeline: one serialized scikit-learn pipeline (`cvd_pipeline.joblib`) does imputation, encoding and the stacked ensemble, so training and serving share identical preprocessing.
+- Stacked ensemble: `ml/stacked.py` replays the training notebook exactly (feature engineering, log1p on skewed columns, the saved preprocessor, four base models, meta-learner), so serving matches training to about 1e-16.
 - Recommendation mapping: probabilities are mapped to Low / Medium / High via `LOW_RISK_MAX_PROBABILITY` and `MEDIUM_RISK_MAX_PROBABILITY`, and to recommendations via rules in `cds_rules`.
 - Auditable inference: every prediction stores the model id, input feature values, probability, and recommendation for traceability and post-hoc analysis.
 
@@ -443,7 +443,7 @@ Integration points and key flows:
 
 - API Client → Back-End: front-end sends normalized requests; `client.ts` converts camelCase ↔ snake_case and attaches `Authorization: Bearer <token>`.
 - Risk Prediction Flow: `POST /api/predict` loads the active model from `model_registry`, merges request values with encounter defaults, runs the stacked pipeline → maps probability to a recommendation via `cds_rules`, and returns/stores the result.
-- Model Artifacts: serialized artifacts live in `Back-End/model/` (`cvd_pipeline.joblib`, `feature_schema.json`, `metrics_ml.json`). The back-end loads them once per process from `MODEL_DIR`.
+- Model Artifacts: serialized artifacts live in `Back-End/model/` (`preprocessor_ml.joblib`, `model_{xgb,lgbm,rf,lr}.joblib`, `meta_learner.joblib`, `feature_schema.json`, `metrics_ml.json`). The back-end loads them once per process from `MODEL_DIR`.
 
 ## Data Flow & Storage
 
@@ -453,25 +453,28 @@ Integration points and key flows:
 
 ## Model
 
-- Pipeline: preprocessing plus a stacked ensemble of base models (logistic regression, random forest, XGBoost, LightGBM) with a meta-learner, in one joblib file. Seed is 42 everywhere; base models use `n_jobs=-1`, and retraining reproduces results to about 1e-16.
-- Retrain from `Back-End/` (reads `model/traindata.csv` and `model/testdata.csv`, rewrites the three artifacts):
+- Ensemble: base models (XGBoost, LightGBM, random forest, logistic regression) trained on the full training set, combined by a logistic-regression meta-learner. Trained in the Kaggle notebook `cvd_ml_fulltrain` (seed 42).
+- Updating the model: copy the notebook's outputs (`preprocessor_ml.joblib`, `model_*.joblib`, `meta_learner.joblib`, `metrics_ml.json`, `test_probs_stack.npy`) into `Back-End/model/`, then from `Back-End/`:
 
 ```bash
-cd Back-End
-python -m ml.train
+python scripts/build_model_metadata.py
+python scripts/export_global_importance.py
 ```
 
-- The decision threshold is chosen from out-of-fold predictions on the training set only; the test set is evaluated once. `model/cvd_ml_fulltrain.ipynb` is historical and superseded by `ml/train.py`.
-- Current held-out test metrics (`model/metrics_ml.json`, model version 2.0.0, 536 train / 134 test rows):
+  The first script checks that the app reproduces the notebook's saved test probabilities and writes `feature_schema.json` plus the extra fields in `metrics_ml.json`; the second refreshes the landing-page feature importance. Update `Front-End/src/app/landing/modelFacts.ts` by hand.
+- Current test metrics (`model/metrics_ml.json`, model version 3.0.0, 536 train / 134 test rows):
 
 | Metric | Value |
 |---|---|
-| ROC AUC | 0.898 (95% CI 0.843-0.943) |
-| Out-of-fold AUC (train) | 0.867 |
-| Brier score | 0.136 |
-| Decision threshold | 0.44 |
-| Accuracy / precision / recall / specificity at threshold | 0.806 / 0.759 / 0.896 / 0.716 |
+| Accuracy | 0.836 |
+| ROC AUC | 0.886 (95% CI 0.827-0.936) |
+| Precision / recall / specificity | 0.808 / 0.881 / 0.791 |
+| F1 | 0.843 |
+| Decision threshold | 0.5075 |
 
+- **Threshold caveat:** the notebook tunes the decision threshold on the test set, so test accuracy is slightly optimistic. ROC AUC does not depend on the threshold.
+- Feature importance (landing page and `model/feature_importance.png`): average of the normalised XGBoost, LightGBM and random-forest importances. Top inputs: BP medication, HbA1c × age, age, total cholesterol, high blood pressure.
+- `python -m ml.train <output-dir>` trains an alternative single-pipeline model (out-of-fold threshold) into a separate folder for comparison; it is not served.
 - **Prevalence caveat:** the dataset is class-balanced (about 50% prevalence), so probabilities are not calibrated to a real clinical population and should not be read as absolute risk. The test set is small, hence the wide AUC interval.
 - **Known limitations:** Diabetes=Yes can lower the estimate for some high-risk profiles (likely treatment confounding in NHANES, where diagnosed diabetics are treated). Scores are not calibrated to population prevalence and are shown in the UI as a "Model score", not an absolute risk. The activity inputs follow NHANES semantics: `vigorousActivityMinutes` and `moderateActivityMinutes` are session counts per unit (PAD810Q/PAD790Q), `sedentaryMinutes` is minutes per moderate session (PAD800) and `sedentaryMinutesAlt` is sedentary minutes per day (PAD680); the API names are kept for compatibility.
 - Per-prediction `contributions` show model sensitivity to each input, not clinical importance. The tool supports screening and is not a diagnosis.

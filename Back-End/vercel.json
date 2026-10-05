@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "app.py": {
-      "excludeFiles": "{tests/**,scripts/**,database/**,model/*.csv,model/*.ipynb,**/__pycache__/**,.pytest_cache/**,requirements-dev.txt,pytest.ini}"
+      "excludeFiles": "{tests/**,scripts/**,database/**,model/*.csv,model/*.ipynb,model/*.png,model/*.npy,**/__pycache__/**,.pytest_cache/**,requirements-dev.txt,pytest.ini}"
     }
   }
 }

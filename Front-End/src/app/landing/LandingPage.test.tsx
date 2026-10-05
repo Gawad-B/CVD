@@ -75,13 +75,19 @@ describe("LandingPage", () => {
     renderLanding();
     expect(screen.getAllByRole("link", { name: /open app/i })[0]).toHaveAttribute("href", "/dashboard");
     expect(screen.queryByRole("button", { name: /try a demo/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Log in" })).not.toBeInTheDocument();
+  });
+
+  it("offers a Log in link to signed-out visitors", () => {
+    renderLanding();
+    expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
   });
 
   it("never claims the model is calibrated", () => {
     renderLanding();
     const hits = screen.queryAllByText(/calibrated/i);
     hits.forEach((node) => expect(node.textContent).toMatch(/not calibrated/i));
-    expect(screen.getByText(/validated on held-out test set/i)).toBeInTheDocument();
+    expect(screen.getByText(/evaluated on a 134-patient test set/i)).toBeInTheDocument();
   });
 
   it("renders the real feature importance bars from the generated JSON", () => {
@@ -90,6 +96,6 @@ describe("LandingPage", () => {
     for (const item of featureImportance) {
       expect(screen.getByLabelText(`${item.label}: ${item.value}% of the strongest input`)).toBeInTheDocument();
     }
-    expect(screen.getByText("Average influence on the score across the test set")).toBeInTheDocument();
+    expect(screen.getByText("Average importance across the XGBoost, LightGBM and random forest models")).toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 {
-  "model_name": "CVD Stacked Pipeline",
-  "model_version": "2.0.0",
+  "model_name": "CVD Stacked Ensemble",
+  "model_version": "3.0.0",
   "raw_columns": [
     "PAD810Q",
     "PAD790Q",
@@ -187,5 +187,22 @@
     "BPQ080": "High cholesterol",
     "RXQ033": "On cholesterol medication"
   },
-  "decision_threshold": 0.44
+  "decision_threshold": 0.5075000000000001,
+  "skew_columns": [
+    "PAD810Q",
+    "PAD790Q",
+    "PAD800",
+    "BMXBMI",
+    "BPXOSY1",
+    "LBDHDD",
+    "LBXGH",
+    "LBXHSCRP",
+    "LBXSNASI",
+    "LBXWBCSI",
+    "LBXRDW",
+    "pulse_pressure",
+    "tc_hdl_ratio",
+    "sleep_diff",
+    "log_crp"
+  ]
 }

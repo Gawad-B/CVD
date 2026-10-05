@@ -1,22 +1,22 @@
 [
   {
-    "label": "Age",
+    "label": "On BP medication",
     "value": 100
   },
   {
+    "label": "HbA1c × age",
+    "value": 45
+  },
+  {
+    "label": "Age",
+    "value": 42
+  },
+  {
     "label": "Total cholesterol",
-    "value": 51
+    "value": 34
   },
   {
     "label": "High blood pressure",
-    "value": 44
-  },
-  {
-    "label": "On BP medication",
-    "value": 43
-  },
-  {
-    "label": "Waist (cm)",
-    "value": 39
+    "value": 34
   }
 ]

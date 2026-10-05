@@ -1,5 +1,7 @@
 import { Activity, Calendar, ChevronRight, ClipboardList, HeartPulse, Play, ShieldCheck as ShieldIcon, Stethoscope } from "lucide-react";
+import { Link } from "react-router";
 import { DemoCta } from "./DemoCta";
+import { useDemo } from "./DemoContext";
 import { MODEL_FACTS } from "./modelFacts";
 
 const NAV = [
@@ -13,6 +15,7 @@ const glass =
   "rounded-2xl border border-white/90 bg-white/55 p-3.5 shadow-[0_10px_30px_-12px_rgba(31,60,120,.3)] backdrop-blur-[14px]";
 
 export function Hero() {
+  const { authenticated } = useDemo();
   return (
     <div
       id="top"
@@ -35,6 +38,14 @@ export function Hero() {
           ))}
         </div>
         <div className="ml-auto flex items-center gap-3">
+          {!authenticated && (
+            <Link
+              to="/login"
+              className="inline-flex h-11 items-center whitespace-nowrap rounded-full border-[1.5px] border-[#d6deec] bg-white px-5 text-[14px] font-semibold text-[#0b1530] shadow-[0_4px_14px_rgba(31,60,120,.08)] transition-colors duration-[160ms] hover:border-[#1f5eff] hover:text-[#1f5eff] motion-reduce:transition-none"
+            >
+              Log in
+            </Link>
+          )}
           <DemoCta
             label="Try a demo"
             className="inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-full bg-[linear-gradient(180deg,#2f6bff,#1a52f0)] px-5 min-[420px]:px-6 text-[14px] font-semibold text-white shadow-[0_10px_24px_-8px_rgba(31,94,255,.6)] transition-[transform,box-shadow] duration-[160ms] hover:-translate-y-px hover:text-white hover:shadow-[0_14px_28px_-8px_rgba(31,94,255,.7)] active:scale-[.98] motion-reduce:translate-none motion-reduce:scale-none motion-reduce:hover:translate-none motion-reduce:active:scale-none motion-reduce:transition-none"
@@ -136,8 +147,8 @@ export function Hero() {
 
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-[20px] border border-white bg-white/80 px-6 py-5 shadow-[0_14px_40px_-18px_rgba(31,60,120,.3)] backdrop-blur-[12px]">
           {[
+            [ShieldIcon, MODEL_FACTS.accuracy, "Accuracy"],
             [Activity, MODEL_FACTS.rocAuc, "ROC AUC"],
-            [ShieldIcon, MODEL_FACTS.recall, "Recall"],
             [ClipboardList, MODEL_FACTS.inputs, "Clinical inputs"],
           ].map(([Icon, value, label]) => {
             const I = Icon as typeof Activity;

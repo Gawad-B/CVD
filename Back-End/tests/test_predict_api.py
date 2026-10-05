@@ -38,7 +38,7 @@ def test_minimal_payload_reports_missing_inputs(client, setup, db):
     assert "BPXOSY1" in result["missingInputs"]
     assert "LBXHGB" in result["missingInputs"]
     assert "RIDAGEYR" not in result["missingInputs"]
-    assert result["modelVersion"] == "2.0.0"
+    assert result["modelVersion"] == "3.0.0"
     with db.cursor() as cursor:
         cursor.execute(
             "SELECT feature_value FROM assessment_feature_values WHERE assessment_id = %s AND feature_name = 'LBXHGB'",
@@ -54,7 +54,7 @@ def test_minimal_payload_reports_missing_inputs(client, setup, db):
         assert age["value_type"] == "number" and float(age["feature_value"]) > 0
         cursor.execute("SELECT explanation_json FROM risk_assessments WHERE id = %s", (result["assessmentId"],))
         explanation = cursor.fetchone()["explanation_json"]
-        assert explanation["modelVersion"] == "2.0.0"
+        assert explanation["modelVersion"] == "3.0.0"
         assert "LBXHGB" in explanation["missingInputs"]
         assert isinstance(explanation["decisionThreshold"], float)
 
@@ -65,8 +65,8 @@ def test_only_one_active_model(client, setup):
     assert response.status_code == 200, response.text
     active = [m for m in response.json() if m["is_active"]]
     assert len(active) == 1
-    assert active[0]["model_name"] == "CVD Stacked Pipeline"
-    assert active[0]["model_version"] == "2.0.0"
+    assert active[0]["model_name"] == "CVD Stacked Ensemble"
+    assert active[0]["model_version"] == "3.0.0"
 
 
 def test_patient_without_dob_and_no_age_is_400(client, setup, db):

@@ -14,17 +14,29 @@ sys.path.insert(0, str(BACKEND_DIR / "scripts"))
 TEST_DB_URL = "postgresql://cardio_test:cardio_test@localhost:55432/cardio_test"
 UNREACHABLE_MSG = "Test DB not reachable — run Back-End/scripts/test_db.sh up"
 
+def _pin_test_environment() -> None:
+    """Point every DB URL the app or the ops scripts read at the test DB.
+
+    `import app` loads Back-End/.env without overriding existing variables, so anything left
+    unset here (e.g. DATABASE_URL_UNPOOLED, which the scripts prefer) would come from a real
+    deployment's .env.
+    """
+    os.environ["DATABASE_URL"] = TEST_DB_URL
+    os.environ["DATABASE_URL_UNPOOLED"] = TEST_DB_URL
+    for name in ("PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"):
+        os.environ.pop(name, None)
+    os.environ["PATIENT_DATA_KEY"] = "test-patient-key-0123"
+
+
 # app reads DATABASE_URL at import time, so this must happen before `import app`.
-os.environ["DATABASE_URL"] = TEST_DB_URL
-os.environ["PATIENT_DATA_KEY"] = "test-patient-key-0123"
+_pin_test_environment()
 
 from migrate import apply_all  # noqa: E402
 
 
 @pytest.fixture(scope="session")
 def db_url() -> str:
-    os.environ["DATABASE_URL"] = TEST_DB_URL
-    os.environ["PATIENT_DATA_KEY"] = "test-patient-key-0123"
+    _pin_test_environment()
     return TEST_DB_URL
 
 

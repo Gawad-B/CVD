@@ -157,7 +157,14 @@ def main(train_csv, test_csv, out_dir) -> dict:
 
 
 if __name__ == "__main__":
+    # The served model is the notebook export (see scripts/build_model_metadata.py), so this
+    # alternative single-pipeline model is written to a folder of your choice, never model/.
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: python -m ml.train <output-dir>")
     here = Path(__file__).resolve().parent.parent / "model"
-    result = main(here / "traindata.csv", here / "testdata.csv", here)
+    out = Path(sys.argv[1]).resolve()
+    if out == here.resolve():
+        raise SystemExit("Refusing to overwrite the served notebook model in model/")
+    result = main(here / "traindata.csv", here / "testdata.csv", out)
     json.dump(result, sys.stdout, indent=2)
     print()

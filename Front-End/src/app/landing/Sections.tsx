@@ -46,10 +46,10 @@ export function HowItWorks() {
 }
 
 const METRICS = [
+  [MODEL_FACTS.accuracy, "Accuracy"],
   [MODEL_FACTS.rocAuc, "ROC AUC"],
   [MODEL_FACTS.recall, "Recall"],
   [MODEL_FACTS.precision, "Precision"],
-  [MODEL_FACTS.inputs, "Clinical inputs"],
 ] as const;
 
 export function ModelSection() {
@@ -66,7 +66,7 @@ export function ModelSection() {
           <div className="absolute bottom-5 left-5 right-5 flex w-fit max-w-full items-center gap-3 rounded-2xl border border-white bg-white/75 px-[18px] py-4 backdrop-blur-[14px]">
             <span className="h-2.5 w-2.5 flex-none rounded-full bg-[#1fbf75] shadow-[0_0_0_4px_rgba(31,191,117,.2)]" />
             <span className="text-[13px] font-semibold text-[#0b1530]">
-              {MODEL_FACTS.version} · validated on held-out test set
+              {MODEL_FACTS.version} · evaluated on a 134-patient test set
             </span>
           </div>
         </div>
@@ -108,7 +108,7 @@ export function ModelSection() {
                 </li>
               ))}
             </ul>
-            <p className="mb-0 mt-3 text-[12px] text-[#b9c5dc]">Average influence on the score across the test set</p>
+            <p className="mb-0 mt-3 text-[12px] text-[#b9c5dc]">Average importance across the XGBoost, LightGBM and random forest models</p>
           </div>
         </div>
       </div>

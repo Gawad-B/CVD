@@ -24,7 +24,7 @@ for item in src.rglob("*"):
     rel = item.relative_to(src)
     if rel.parts[0] in top or "__pycache__" in rel.parts:
         continue
-    if rel.parts[0] == "model" and item.suffix in {".csv", ".ipynb"}:
+    if rel.parts[0] == "model" and item.suffix in {".csv", ".ipynb", ".png", ".npy"}:
         continue
     if item.is_file():
         (dst / rel).parent.mkdir(parents=True, exist_ok=True)

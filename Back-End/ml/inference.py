@@ -11,10 +11,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import joblib
 import pandas as pd
 
 from ml.features import RAW_COLUMNS, RAW_NUMERIC_COLUMNS
+from ml.stacked import StackedEnsemble
 
 NAN = float("nan")
 
@@ -164,8 +164,8 @@ def _model_dir() -> Path:
 
 
 @lru_cache(maxsize=1)
-def get_model() -> Any:
-    return joblib.load(_model_dir() / "cvd_pipeline.joblib")
+def get_model() -> StackedEnsemble:
+    return StackedEnsemble.load(_model_dir(), get_schema()["skew_columns"])
 
 
 @lru_cache(maxsize=1)
