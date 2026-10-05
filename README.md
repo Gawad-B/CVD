@@ -66,7 +66,7 @@ Public landing page (`/`) and a signed-in app shell. The shell has a top tab bar
 - **Landing page:** hero with a "Try a demo" call to action, how it works, model facts, care-team roles and security. Model numbers (accuracy, ROC AUC, recall, precision, feature importances) come from `Back-End/model/metrics_ml.json` and the tree models' importances, copied into the front-end.
 - **Dashboard:** a 3D heart whose colour and beat follow the effective risk level, an ECG strip, patient list with selection, vitals, the model contributions, sign-off, and clinician override. The heart rate is optional and is **not a model input**: a measured value is shown as "Measured"; without one the animation uses an illustrative rate for the risk level and is labelled as such.
 - **Patients:** list, search, add patient (date of birth, sex, contact), patient details with their assessments.
-- **Assessments:** past results and a new-assessment form (compact required inputs plus an optional "More clinical inputs" section, optional heart rate). The result links back to the dashboard heart.
+- **Assessments:** past results and a new-assessment form (required inputs are the ones in the model's top-20 feature importance; everything else is in an "Optional inputs" section, plus optional heart rate). The result links back to the dashboard heart.
 - **Assessment details:** inputs ("Not recorded" for blanks), estimated inputs, contributions, override and sign-off history.
 - **Models, Users, Audit log:** model registry (admin, doctor), user management with demo tags and deactivate confirmation (admin), filterable audit log with "Load more" (admin, auditor).
 
@@ -170,7 +170,8 @@ python Back-End/scripts/encrypt_patient_data.py --apply    # encrypts rows and c
 ### Encounters & Risk Assessment
 - Create encounters with optional clinical notes
 - Comprehensive risk assessment form with:
-  - **Mandatory fields**: Systolic/diastolic BP, total cholesterol, HDL cholesterol, BMI, smoker status, diabetic status (yes/no/borderline), age (auto-derived from DOB), HbA1c, hs-CRP, sodium, WBC, hemoglobin, platelets, RDW, activity levels, sleep hours, BP/cholesterol medication history
+  - **Mandatory fields** (the model's top-20 feature importance, plus diastolic BP and smoker status): age (auto-derived from DOB), BMI, waist, systolic and diastolic BP, history of high BP, BP medication, total cholesterol, HDL, HbA1c, hs-CRP, WBC, hemoglobin, platelets, RDW, income ratio, smoker status
+  - **Optional fields** (imputed when blank): diabetic status, high-cholesterol history, cholesterol medication, sodium, activity, sleep, race, education
   - **Additional fields**: Custom feature entries for extensibility
 - Inputs are range-checked against clinical limits; the age derived from DOB must be 18-120 (the model is adult-only)
 - ML-powered risk prediction using a stacked ensemble (XGBoost, LightGBM, random forest, logistic regression and a logistic meta-learner)

@@ -86,12 +86,21 @@ function renderPage(url = "/assessments") {
 
 async function fillCompact(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText("BMI (kg/m²)"), "27.5");
+  await user.type(screen.getByLabelText("Waist (cm)"), "98");
   await user.type(screen.getByLabelText("Systolic BP (mmHg)"), "128");
   await user.type(screen.getByLabelText("Diastolic BP (mmHg)"), "82");
+  await user.selectOptions(screen.getByLabelText("History of high BP"), "no");
+  await user.selectOptions(screen.getByLabelText("On BP medication"), "no");
   await user.type(screen.getByLabelText("Total cholesterol (mg/dL)"), "190");
   await user.type(screen.getByLabelText("HDL (mg/dL)"), "52");
+  await user.type(screen.getByLabelText("HbA1c (%)"), "5.6");
+  await user.type(screen.getByLabelText("hs-CRP (mg/L)"), "1.8");
+  await user.type(screen.getByLabelText("WBC (10³/µL)"), "6.6");
+  await user.type(screen.getByLabelText("Hemoglobin (g/dL)"), "14");
+  await user.type(screen.getByLabelText("Platelets (10³/µL)"), "240");
+  await user.type(screen.getByLabelText("RDW (%)"), "13.5");
+  await user.type(screen.getByLabelText("Income ratio (INDFMPIR)"), "2.5");
   await user.selectOptions(screen.getByLabelText("Smoker"), "no");
-  await user.selectOptions(screen.getByLabelText("Diabetic"), "no");
 }
 
 beforeEach(() => {
@@ -172,33 +181,32 @@ describe("Assessments: new assessment form", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "Run assessment" }));
     expect(screen.getByText("Select a patient.")).toBeInTheDocument();
-    expect(screen.getAllByText("Required.")).toHaveLength(5);
-    expect(screen.getByText("Choose Yes/No.")).toBeInTheDocument();
-    expect(screen.getByText("Choose No/Borderline/Yes.")).toBeInTheDocument();
+    expect(screen.getAllByText("Required.")).toHaveLength(13);
+    expect(screen.getAllByText("Choose Yes/No.")).toHaveLength(3);
     expect(screen.getByLabelText("Patient")).toHaveFocus();
     expect(api.submitRiskAssessment).not.toHaveBeenCalled();
   });
 
-  it("toggles the More clinical inputs disclosure with every other input", async () => {
+  it("toggles the Optional inputs disclosure with every other input", async () => {
     renderPage();
-    const toggle = await screen.findByRole("button", { name: "More clinical inputs" });
+    const toggle = await screen.findByRole("button", { name: "Optional inputs" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByLabelText("HbA1c (%)")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Sodium (mmol/L)")).not.toBeInTheDocument();
 
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    for (const label of ["HbA1c (%)", "hs-CRP (mg/L)", "Sodium (mmol/L)", "WBC (10³/µL)", "Hemoglobin (g/dL)", "Platelets (10³/µL)", "RDW (%)", "Waist (cm)", "Sleep, weekday (hours)", "Income ratio (INDFMPIR)", "Clinical notes"]) {
+    for (const label of ["Diabetic", "Sodium (mmol/L)", "On cholesterol medication", "Sleep, weekday (hours)", "Clinical notes"]) {
       expect(screen.getByLabelText(label)).toBeInTheDocument();
     }
     const race = screen.getByLabelText("Race/ethnicity (RIDRETH3)") as HTMLSelectElement;
     expect(race.value).toBe("");
     expect(within(race).getByRole("option", { name: "Not recorded" })).toBeInTheDocument();
-    expect(screen.getByLabelText("HbA1c (%)")).toHaveAttribute("min", "3");
-    expect(screen.getByLabelText("HbA1c (%)")).toHaveAttribute("max", "20");
+    expect(screen.getByLabelText("Sodium (mmol/L)")).toHaveAttribute("min", "110");
+    expect(screen.getByLabelText("Sodium (mmol/L)")).toHaveAttribute("max", "170");
 
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByLabelText("HbA1c (%)")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Sodium (mmol/L)")).not.toBeInTheDocument();
   });
 
   it("omits heartRate unless provided and sends it as an integer", async () => {
@@ -213,7 +221,8 @@ describe("Assessments: new assessment form", () => {
     const first = api.submitRiskAssessment.mock.calls[0][0];
     expect(first.patientId).toBe(10);
     expect(first.payload).not.toHaveProperty("heartRate");
-    expect(first.payload).toMatchObject({ bmi: 27.5, systolicBp: 128, diastolicBp: 82, totalCholesterol: 190, hdl: 52, smoker: "no", diabetic: "no" });
+    expect(first.payload).toMatchObject({ bmi: 27.5, waistCm: 98, systolicBp: 128, diastolicBp: 82, smoker: "no", highBp: "no", bpMed: "no", totalCholesterol: 190, hdl: 52, hba1cPercent: 5.6 });
+    expect(first.payload.diabetic).toBeUndefined();
     expect(first.payload.age).toBeGreaterThanOrEqual(60);
 
     await user.type(screen.getByLabelText("Heart rate (bpm)"), "72");
@@ -263,7 +272,7 @@ describe("Assessments: new assessment form", () => {
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
     await fillCompact(user);
-    await user.click(screen.getByRole("button", { name: "More clinical inputs" }));
+    await user.click(screen.getByRole("button", { name: "Optional inputs" }));
 
     await user.selectOptions(screen.getByLabelText("Patient"), "11");
     const dialog = await screen.findByRole("dialog", { name: "Switch patient?" });
@@ -277,8 +286,8 @@ describe("Assessments: new assessment form", () => {
     await user.click(within(await screen.findByRole("dialog", { name: "Switch patient?" })).getByRole("button", { name: "Clear and switch" }));
     expect((screen.getByLabelText("Patient") as HTMLSelectElement).value).toBe("11");
     expect((screen.getByLabelText("BMI (kg/m²)") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Smoker") as HTMLSelectElement).value).toBe("");
-    expect(screen.getByRole("button", { name: "More clinical inputs" })).toHaveAttribute("aria-expanded", "false");
+    expect((screen.getByLabelText("On BP medication") as HTMLSelectElement).value).toBe("");
+    expect(screen.getByRole("button", { name: "Optional inputs" })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("blocks a duplicate run until a value changes or the form is reset", async () => {
@@ -362,11 +371,11 @@ describe("Assessments: new assessment form", () => {
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
     await fillCompact(user);
-    await user.click(screen.getByRole("button", { name: "More clinical inputs" }));
-    await user.type(screen.getByLabelText("HbA1c (%)"), "55");
-    await user.click(screen.getByRole("button", { name: "More clinical inputs" }));
+    await user.click(screen.getByRole("button", { name: "Optional inputs" }));
+    await user.type(screen.getByLabelText("Sodium (mmol/L)"), "500");
+    await user.click(screen.getByRole("button", { name: "Optional inputs" }));
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
-    expect(screen.getByLabelText("HbA1c (%)")).toHaveFocus();
+    expect(screen.getByLabelText("Sodium (mmol/L)")).toHaveFocus();
   });
 
   it("shows a neutral unknown risk (not low) for an unexpected risk level in the result", async () => {
@@ -395,11 +404,11 @@ describe("Assessments: new assessment form", () => {
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
     await fillCompact(user);
-    await user.click(screen.getByRole("button", { name: "More clinical inputs" }));
-    await user.type(screen.getByLabelText("HbA1c (%)"), "55");
-    await user.click(screen.getByRole("button", { name: "More clinical inputs" }));
+    await user.click(screen.getByRole("button", { name: "Optional inputs" }));
+    await user.type(screen.getByLabelText("Sodium (mmol/L)"), "500");
+    await user.click(screen.getByRole("button", { name: "Optional inputs" }));
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
-    expect(screen.getByRole("button", { name: "More clinical inputs" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText(/must be between 3 and 20/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Optional inputs" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/must be between 110 and 170/)).toBeInTheDocument();
   });
 });

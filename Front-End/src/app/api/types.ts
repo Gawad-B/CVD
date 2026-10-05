@@ -203,25 +203,31 @@ export interface UpdateUserInput {
 export interface RiskAssessmentRequest {
   patientId: number;
   payload: {
+    // Required: the model's top-20 feature-importance inputs plus diastolic BP and smoker.
+    age?: number;
+    bmi: number;
+    waistCm: number;
     systolicBp: number;
     diastolicBp: number;
+    highBp: "yes" | "no";
+    bpMed: "yes" | "no";
     totalCholesterol: number;
     hdl: number;
-    bmi: number;
+    hba1cPercent: number;
+    hsCrp: number;
+    wbc: number;
+    hemoglobin: number;
+    platelets: number;
+    rdw: number;
+    incomeRatio: number;
     smoker: "yes" | "no";
-    diabetic: "yes" | "no" | "borderline";
-    age?: number;
-    waistCm?: number;
-    hba1cPercent?: number;
-    hsCrp?: number;
+    // Optional: imputed by the model when omitted.
+    diabetic?: "yes" | "no" | "borderline";
+    highChol?: "yes" | "no";
+    cholMed?: "yes" | "no";
     sodium?: number;
-    wbc?: number;
-    hemoglobin?: number;
-    platelets?: number;
-    rdw?: number;
     race?: number;
     education?: number;
-    incomeRatio?: number;
     vigorousActivityMinutes?: number;
     moderateActivityMinutes?: number;
     moderateActivityUnit?: number;
@@ -229,10 +235,6 @@ export interface RiskAssessmentRequest {
     sedentaryMinutesAlt?: number;
     sleepHoursWeekday?: number;
     sleepHoursWeekend?: number;
-    highBp?: "yes" | "no";
-    highChol?: "yes" | "no";
-    bpMed?: "yes" | "no";
-    cholMed?: "yes" | "no";
     notes?: string;
     /** Optional measured heart rate, 30-220 bpm. Stored with the assessment, not a model input. */
     heartRate?: number;

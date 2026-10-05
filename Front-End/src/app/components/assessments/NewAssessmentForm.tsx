@@ -7,12 +7,10 @@ import { normalizeRisk } from "../../heart";
 import { RISK_TONE } from "../../heart/riskTone";
 import { Badge, Button, Card, CardTitle, ConfirmModal, Field, Input, Select, buttonClasses, cn, riskVariant } from "../../ui";
 import {
-  COMPACT_NUMBER_FIELDS,
-  DIABETIC_OPTIONS,
   HEART_RATE_MAX,
   HEART_RATE_MIN,
   MORE_FIELDS,
-  SMOKER_OPTIONS,
+  REQUIRED_FIELDS,
   buildAssessmentPayload,
   initialValues,
   validateAssessment,
@@ -71,7 +69,13 @@ function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale:
   );
 }
 
-function renderField(field: AssessmentField, values: FormValues, errors: FormErrors, set: (name: string, value: string) => void) {
+function renderField(
+  field: AssessmentField,
+  values: FormValues,
+  errors: FormErrors,
+  set: (name: string, value: string) => void,
+  emptyLabel = "Not recorded",
+) {
   return (
     <Field key={field.name} label={field.label} error={errors[field.name]}>
       {(a) =>
@@ -88,7 +92,7 @@ function renderField(field: AssessmentField, values: FormValues, errors: FormErr
           />
         ) : (
           <Select {...a} value={values[field.name]} onChange={(e) => set(field.name, e.target.value)}>
-            <option value="">Not recorded</option>
+            <option value="">{emptyLabel}</option>
             {field.options.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
@@ -201,8 +205,6 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
     }
   }
 
-  const compact = (name: string) => COMPACT_NUMBER_FIELDS.find((f) => f.name === name)!;
-
   return (
     <Card>
       <CardTitle>New assessment</CardTitle>
@@ -228,35 +230,7 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
           <Field label="Age" hint={patient ? "From date of birth" : undefined} error={errors.age}>
             {(a) => <Input {...a} readOnly value={age ?? ""} placeholder="—" className="!bg-[#f3f6fc]" />}
           </Field>
-          {renderField(compact("bmi"), values, errors, set)}
-          {renderField(compact("systolicBp"), values, errors, set)}
-          {renderField(compact("diastolicBp"), values, errors, set)}
-          {renderField(compact("totalCholesterol"), values, errors, set)}
-          {renderField(compact("hdl"), values, errors, set)}
-          <Field label="Smoker" error={errors.smoker}>
-            {(a) => (
-              <Select {...a} value={values.smoker} onChange={(e) => set("smoker", e.target.value)}>
-                <option value="">Select…</option>
-                {SMOKER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-          <Field label="Diabetic" error={errors.diabetic}>
-            {(a) => (
-              <Select {...a} value={values.diabetic} onChange={(e) => set("diabetic", e.target.value)}>
-                <option value="">Select…</option>
-                {DIABETIC_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
+          {REQUIRED_FIELDS.map((f) => renderField(f, values, errors, set, "Select…"))}
           <Field label="Heart rate (bpm)" hint="Optional · not used by the model" error={errors.heartRate} className="min-[480px]:col-span-2">
             {(a) => (
               <Input
@@ -281,14 +255,14 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
             onClick={() => setMoreOpen((open) => !open)}
             className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold text-[#1446d1] hover:bg-[#e8eefb]"
           >
-            More clinical inputs
+            Optional inputs
             <ChevronDown className={cn("h-4 w-4 transition-transform duration-150 motion-reduce:transition-none", moreOpen && "rotate-180")} aria-hidden />
           </button>
           <div id={moreId} hidden={!moreOpen} className="mt-2">
             {moreOpen && (
               <div className="flex flex-col gap-3.5 rounded-[14px] bg-[#f3f6fc] p-3.5">
                 <p className="text-[12.5px] text-[#5b6b85]">
-                  All optional. Anything left as “Not recorded” is estimated from population medians.
+                  All optional — these inputs have little influence on the model. Anything left as “Not recorded” is estimated from the training data (median or most common answer).
                 </p>
                 <div className={GRID}>{MORE_FIELDS.map((f) => renderField(f, values, errors, set))}</div>
                 <Field label="Clinical notes">
