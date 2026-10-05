@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import { createUser, getUsers, updateUser } from "../api/client";
 import type { UpdateUserInput, User } from "../api/types";
 import { useAuth } from "../context/AuthContext";
-import { Avatar, Badge, Button, Card, ConfirmModal, Field, Input, Modal, Select, Switch } from "../ui";
+import { Avatar, Badge, Button, Card, ConfirmModal, Field, Input, Modal, PasswordInput, Select, Switch } from "../ui";
 import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate } from "./dashboard/logic";
 import { PageHeader } from "./PageHeader";
@@ -79,7 +79,7 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
         <Field label="Email">{(c) => <Input {...c} type="email" value={email} autoComplete="off" onChange={(e) => setEmail(e.target.value)} />}</Field>
         <RoleSelect value={role} onChange={setRole} />
         <Field label="Password" error={passwordError} hint={`At least ${MIN_PASSWORD} characters.`}>
-          {(c) => <Input {...c} type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />}
+          {(c) => <PasswordInput {...c} value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />}
         </Field>
         {error && (
           <p role="alert" className="text-[13px] font-semibold text-[#b91c1c]">
@@ -157,7 +157,7 @@ function EditUserModal({ user, isSelf, onClose, onSaved }: { user: User; isSelf:
           error={passwordError}
           hint={`At least ${MIN_PASSWORD} characters. Leave blank to keep the current password. Changing it signs the user out of all sessions.`}
         >
-          {(c) => <Input {...c} type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />}
+          {(c) => <PasswordInput {...c} value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />}
         </Field>
         {error && (
           <p role="alert" className="text-[13px] font-semibold text-[#b91c1c]">

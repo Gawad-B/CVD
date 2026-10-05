@@ -30,9 +30,9 @@ export function VitalsCard({ assessment }: { assessment: RiskAssessment | null }
       </div>
       <div className="mt-3.5 grid grid-cols-2 gap-2.5">
         {vitals.map((v) => (
-          <div key={v.key} className="rounded-[16px] bg-[#f3f6fc] p-3.5">
+          <div key={v.key} className="min-w-0 rounded-[16px] bg-[#f3f6fc] p-3.5">
             <div className="text-[12px] font-semibold text-[#5b6b85]">{v.label}</div>
-            <div className="mt-2 flex items-baseline gap-1">
+            <div className="mt-2 flex flex-wrap items-baseline gap-x-1">
               <span
                 data-abnormal={v.abnormal || undefined}
                 className="text-[22px] font-bold tracking-[-0.02em] tabular-nums"
@@ -41,7 +41,7 @@ export function VitalsCard({ assessment }: { assessment: RiskAssessment | null }
                 {assessment ? v.value : "—"}
               </span>
               {assessment && v.abnormal && <span className="sr-only">{` (${v.flag})`}</span>}
-              <span className="text-[11.5px] text-[#5b6b85]">{v.unit}</span>
+              <span className="whitespace-nowrap text-[11.5px] text-[#5b6b85]">{v.unit}</span>
             </div>
           </div>
         ))}

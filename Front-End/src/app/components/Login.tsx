@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { Check, Copy, Lock, Mail, User } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { ApiError } from "../api/errors";
-import { Button, Field, Input, cn } from "../ui";
+import { Button, Field, Input, PasswordInput, cn } from "../ui";
 import { formatDate } from "./dashboard/logic";
 
 interface DemoExpiredInfo {
@@ -210,10 +210,9 @@ export function Login() {
           <Field label="Password">
             {(control) => (
               <div className="relative">
-                <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8fa1c4]" aria-hidden />
-                <Input
+                <Lock className="pointer-events-none absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-[#8fa1c4]" aria-hidden />
+                <PasswordInput
                   {...control}
-                  type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   autoComplete="current-password"

@@ -7,7 +7,7 @@ export type { BadgeVariant } from "./Badge";
 export { PillTabs } from "./PillTabs";
 export type { PillTab } from "./PillTabs";
 export { Modal } from "./Modal";
-export { Input, Select, Field } from "./Field";
+export { Input, PasswordInput, Select, Field } from "./Field";
 export { Switch } from "./Switch";
 export { Avatar, initialsOf } from "./Avatar";
 export { ConfirmModal } from "./ConfirmModal";
