@@ -115,7 +115,7 @@ export function HeartStage({ assessment, code, meta }: Props) {
         <p className="text-[11.5px] text-[#5b6b85]">
           {measured ? null : <span className="font-semibold">Illustration of risk level — not patient data</span>}
           {measured ? null : <br />}
-          Decision support only. Not calibrated to population prevalence; this is not an absolute risk.
+          Decision support only. The ML score is the chance of already-diagnosed CVD, not a 10-year risk.
         </p>
         <HeartCredit />
       </div>

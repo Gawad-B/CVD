@@ -177,7 +177,7 @@ describe("Dashboard", () => {
     expect(await screen.findByText("Illustration of risk level — not patient data")).toBeInTheDocument();
     expect(screen.queryByText(/\bbpm ·/)).not.toBeInTheDocument();
     expect(screen.getByText("ECG · illustration")).toBeInTheDocument();
-    expect(screen.getByText(/this is not an absolute risk/)).toBeInTheDocument();
+    expect(screen.getByText(/not a 10-year risk/)).toBeInTheDocument();
   });
 
   it("shows counterfactual factor wording and relative bars", async () => {

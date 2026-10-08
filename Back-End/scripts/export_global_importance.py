@@ -1,8 +1,8 @@
 """Export global feature importance for the landing page.
 
-The served model is a logistic regression on standardised features (model/cvd_nhanes_v2.ipynb),
-so a feature's importance is the absolute value of its coefficient: the change in log-odds per
-one standard deviation. Missing-value indicator columns are skipped. The top 5 are scaled to
+The served model is a calibrated logistic regression on standardised features
+(model/cvd_nhanes_v2.ipynb), so a feature's importance is the absolute value of its coefficient
+(averaged over the calibration folds): the change in log-odds per one standard deviation. The top 5 are scaled to
 whole percentages of the largest one.
 
 Usage (from Back-End/):  python scripts/export_global_importance.py
@@ -17,17 +17,14 @@ BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 from ml import inference  # noqa: E402
-from ml.nhanes import FEATURE_COLUMNS, FEATURE_LABELS  # noqa: E402
+from ml.nhanes import FEATURE_LABELS, model_coefficients  # noqa: E402
 
 OUTPUT = BACKEND.parent / "Front-End" / "src" / "app" / "landing" / "featureImportance.json"
 TOP_N = 5
 
 
 def main() -> None:
-    model = inference.get_model().named_steps["model"]
-    if not hasattr(model, "coef_"):
-        raise SystemExit("The served model has no coefficients; update this script for its importance method.")
-    weights = dict(zip(FEATURE_COLUMNS, model.coef_[0][: len(FEATURE_COLUMNS)]))
+    weights = model_coefficients(inference.get_model()).to_dict()
     top = sorted(weights.items(), key=lambda pair: abs(pair[1]), reverse=True)[:TOP_N]
     peak = abs(top[0][1])
     result = [{"label": FEATURE_LABELS[name], "value": round(100 * abs(weight) / peak)} for name, weight in top]

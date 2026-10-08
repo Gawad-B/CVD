@@ -51,7 +51,7 @@ describe("ModelRegistry", () => {
     expect(within(retired).getByText("Retired")).toBeInTheDocument();
     expect(within(retired).queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByText(/set as active/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Not calibrated to population prevalence; decision support only.")).toBeInTheDocument();
+    expect(screen.getByText("Calibrated to NHANES 2021–2023 adults (existing diagnosed CVD); decision support only.")).toBeInTheDocument();
   });
 
   it("shows an error with retry when the models cannot load", async () => {

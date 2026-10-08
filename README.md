@@ -321,8 +321,8 @@ Copy `Back-End/.env.example` to `Back-End/.env` and `Front-End/.env.example` to 
 | `PASSWORD_HASH_ITERATIONS` | `600000` | PBKDF2-HMAC-SHA256 iterations |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Failed logins before lockout |
 | `LOGIN_LOCKOUT_MINUTES` | `15` | Lockout duration (HTTP 429) |
-| `LOW_RISK_MAX_PROBABILITY` | `0.30` | Upper probability bound of the low-risk band |
-| `MEDIUM_RISK_MAX_PROBABILITY` | `0.70` | Upper probability bound of the medium-risk band |
+| `LOW_RISK_MAX_PROBABILITY` | from `metrics_ml.json` | Overrides the ML low-band edge (screening threshold) |
+| `MEDIUM_RISK_MAX_PROBABILITY` | from `metrics_ml.json` | Overrides the ML high-band edge (90%-specificity threshold) |
 | `MODEL_DIR` | `Back-End/model` | Directory holding the model files, `feature_schema.json`, `metrics_ml.json` |
 | `HOST` | `0.0.0.0` | Bind address for `python app.py` |
 | `PORT` | `8000` | Port for `python app.py` |
@@ -429,7 +429,7 @@ This project follows an engineering-first, data-driven approach to cardiology ri
 - Data collection: capture structured clinical values and optional free-text notes during encounters to ensure reproducible inputs for ML models.
 - Deterministic feature building: encounter data is validated against clinical ranges and normalized (units, coded values, missing-value encodings) in `ml/features.py` / `ml/inference.py` before prediction.
 - Shared features: `ml/nhanes.py` is imported by both the training notebook and the API, so serving computes features exactly as in training.
-- Recommendation mapping: probabilities are mapped to Low / Medium / High via `LOW_RISK_MAX_PROBABILITY` and `MEDIUM_RISK_MAX_PROBABILITY`, and to recommendations via rules in `cds_rules`.
+- Recommendation mapping: the level comes from AHA PREVENT when it applies, otherwise from the ML risk bands (`risk_bands` in `metrics_ml.json`), raised by clinical alerts; recommendations come from `cds_rules`.
 - Auditable inference: every prediction stores the model id, input feature values, probability, and recommendation for traceability and post-hoc analysis.
 
 ## System Architecture (High Level)
@@ -457,18 +457,23 @@ Integration points and key flows:
 The risk shown to clinicians combines three parts:
 
 1. **AHA PREVENT 10-year CVD risk** (`Back-End/ml/prevent.py`): the published equations (Khan et al., *Circulation* 2024) built from long-term follow-up cohorts. They use age, sex, total and HDL cholesterol, systolic BP, BP and cholesterol medication, diabetes, current smoking and eGFR (from creatinine, CKD-EPI 2021), plus HbA1c and urine albumin/creatinine when given. Valid for ages 30–79 and in-range inputs; otherwise the app says why and falls back to the ML level. Categories: <5% low, 5–20% medium (borderline/intermediate), ≥20% high. Unit-tested against the published worked examples.
-2. **NHANES ML model** (`Back-End/model/cvd_nhanes_v2.ipynb`, served as `model/cvd_pipeline.joblib`): logistic regression on 34 raw inputs from 5,330 NHANES 2021–2023 adults. Label: doctor-diagnosed heart failure, coronary heart disease, angina, heart attack or stroke. Feature code is shared between training and serving (`Back-End/ml/nhanes.py`).
+2. **NHANES ML model** (`Back-End/model/cvd_nhanes_v2.ipynb`, served as `model/cvd_pipeline.joblib`): sigmoid-calibrated logistic regression trained on 5,330 NHANES 2021–2023 adults (34 raw inputs; BP and cholesterol medication are collected for PREVENT but kept out of the model). Label: doctor-diagnosed heart failure, coronary heart disease, angina, heart attack or stroke. Its output is a calibrated probability of *existing* diagnosed CVD, not a 10-year risk. Feature code is shared between training and serving (`Back-End/ml/nhanes.py`).
 3. **Clinical alerts** (`Back-End/clinical_alerts.py`): guideline thresholds on the raw readings that can raise, never lower, the level.
 
-Test results of the ML model (`model/metrics_ml.json`, version 4.0.0; 4,264 train / 1,066 test; threshold chosen by cross-validation on the training set; test set used once):
+Test results of the ML model (`model/metrics_ml.json`, version 4.1.0; 4,264 train / 1,066 test, 12.5% with CVD; calibration and thresholds chosen by cross-validation on the training set; test set used once):
 
 | Metric | Value |
 |---|---|
-| ROC AUC | 0.864 (95% CI 0.832–0.892); 5-fold CV AUC 0.873 |
-| Sensitivity / specificity | 0.842 / 0.733 |
-| Balanced accuracy | 0.788 |
-| Accuracy at 12.5% prevalence | 0.747 |
+| ROC AUC | 0.861 (95% CI 0.829–0.890); 5-fold CV AUC 0.871 |
+| PR-AUC | 0.489 (no-skill baseline 0.125) |
+| At the screening threshold (≥ 90% sensitivity on training data) | sensitivity 0.902, specificity 0.633, **PPV 0.260**, **NPV 0.978**, 43% flagged |
+| At the high-band threshold (90% specificity on training data) | sensitivity 0.624, specificity 0.870, PPV 0.407 |
+| Calibration | Brier 0.083, expected calibration error 0.020, mean predicted 0.135 vs observed 0.125 |
 
+- **ML risk bands:** low below the screening threshold, high from the high-band threshold, medium in between. The notebook writes them to `metrics_ml.json` (`risk_bands`); `LOW_RISK_MAX_PROBABILITY` / `MEDIUM_RISK_MAX_PROBABILITY` override them. They are only used when PREVENT is unavailable.
+- **Reading PPV:** at 12.5% prevalence about 1 in 4 flagged people has diagnosed CVD, so a flag means "look closer"; a negative result is reliable (NPV 98%).
+- **Model choice:** ten models were compared by 5-fold CV AUC: logistic regression 0.871, LightGBM 0.873, XGBoost 0.873, stack (LR + XGBoost + HistGradientBoosting + MLP) 0.875, random forest 0.865, HistGradientBoosting 0.860, SVM 0.854, MLP 0.844. The top models differ by less than the fold-to-fold spread (about ±0.03), so the simplest one (logistic regression) is used: explainable, calibrates cleanly, tiny artifact.
+- **Leakage check (test set):** adding BP and cholesterol medication changes AUC 0.861 → 0.863, so they are not driving performance and stay out; removing diagnosis-history answers gives 0.853 and also removing self-rated health 0.825. No post-event variables are used.
 - **Why not higher, and why PREVENT is the main risk:** NHANES is a snapshot, and the label is *already-diagnosed* CVD. Diagnosed patients are treated, so their measured cholesterol and BP are lower (mean total cholesterol 159 mg/dL in CVD patients on statins vs 196 in people without CVD or statins). The ML model therefore cannot learn "higher readings → higher risk" and does not raise its score for them; the notebook documents this (section 7). The learning curve flattens, and logistic regression ties a LightGBM/random-forest stack, so the ceiling is the data, not the algorithm. Read the ML score as "how closely the profile resembles people living with diagnosed CVD".
 - **Retraining:** run `Back-End/model/cvd_nhanes_v2.ipynb` from `Back-End/model/` (it downloads the NHANES tables from the CDC into the git-ignored `model/nhanes_cache/`, writes `nhanes_cvd_2021_2023.csv`, the pipeline, `feature_schema.json`, `metrics_ml.json` and the figures). Then run `python scripts/export_global_importance.py` from `Back-End/` and update `Front-End/src/app/landing/modelFacts.ts`.
 - **Clinical alerts:** hypertensive crisis (≥180/120, critical), stage 2 hypertension (≥140/90), total cholesterol ≥240, HbA1c ≥6.5 (warnings), plus low HDL, smoking, obesity and hs-CRP >10 (notes). A critical alert or three major risk factors raise the level to at least High; any warning raises it to at least Medium.

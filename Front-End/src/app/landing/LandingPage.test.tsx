@@ -83,10 +83,9 @@ describe("LandingPage", () => {
     expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
   });
 
-  it("never claims the model is calibrated", () => {
+  it("never presents the ML score as a 10-year risk", () => {
     renderLanding();
-    const hits = screen.queryAllByText(/calibrated/i);
-    hits.forEach((node) => expect(node.textContent).toMatch(/not calibrated/i));
+    expect(screen.queryAllByText(/10-year/i).every((node) => /PREVENT/.test(node.textContent ?? ""))).toBe(true);
     expect(screen.getByText(/evaluated on 1,066 held-out patients/i)).toBeInTheDocument();
   });
 

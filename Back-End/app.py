@@ -48,8 +48,18 @@ MIN_PASSWORD_LENGTH = 12
 LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
 LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
 PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "600000"))
-LOW_RISK_MAX_PROBABILITY = float(os.getenv("LOW_RISK_MAX_PROBABILITY", "0.30"))
-MEDIUM_RISK_MAX_PROBABILITY = float(os.getenv("MEDIUM_RISK_MAX_PROBABILITY", "0.70"))
+
+
+def _risk_band(env_name: str, metrics_key: str, default: float) -> float:
+    """ML score band edge: env override, else the notebook's data-derived band (metrics_ml.json)."""
+    if os.getenv(env_name):
+        return float(os.environ[env_name])
+    return float(inference.get_metrics().get("risk_bands", {}).get(metrics_key, default))
+
+
+# Low below the screening threshold (>= 90% sensitivity), high from the 90%-specificity threshold.
+LOW_RISK_MAX_PROBABILITY = _risk_band("LOW_RISK_MAX_PROBABILITY", "low_max", 0.30)
+MEDIUM_RISK_MAX_PROBABILITY = _risk_band("MEDIUM_RISK_MAX_PROBABILITY", "medium_max", 0.70)
 
 
 def cors_settings() -> Dict[str, Any]:

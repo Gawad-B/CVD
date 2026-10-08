@@ -48,8 +48,8 @@ export const LEGACY_FEATURE_LABELS: Record<string, string> = {
 
 export const ALL_FEATURE_LABELS: Record<string, string> = { ...FEATURE_LABELS, ...LEGACY_FEATURE_LABELS };
 
-// Shown wherever a model score is displayed: the number is not an absolute risk.
-export const SCORE_DISCLAIMER = "Not calibrated to population prevalence; this is not an absolute risk.";
+// Shown wherever the ML score is displayed: it is calibrated, but to existing disease, not future risk.
+export const SCORE_DISCLAIMER = "ML score: calibrated chance of already-diagnosed CVD among NHANES adults, not a 10-year risk.";
 
 // Code maps mirror Back-End/ml/inference.py (RACE_CODES, EDUCATION_CODES, activity unit).
 export const RACE_OPTIONS: Array<{ value: string; label: string }> = [

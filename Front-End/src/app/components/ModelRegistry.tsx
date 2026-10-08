@@ -105,7 +105,7 @@ export function ModelRegistry() {
     <div className="flex flex-col gap-5">
       <PageHeader title="Model registry" subtitle="Only one model scores new encounters at a time" />
       {body}
-      <p className="text-[12.5px] text-[#5b6b85]">Not calibrated to population prevalence; decision support only.</p>
+      <p className="text-[12.5px] text-[#5b6b85]">Calibrated to NHANES 2021–2023 adults (existing diagnosed CVD); decision support only.</p>
     </div>
   );
 }

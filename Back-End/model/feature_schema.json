@@ -1,6 +1,6 @@
 {
   "model_name": "CVD NHANES Logistic",
-  "model_version": "4.0.0",
+  "model_version": "4.1.0",
   "raw_columns": [
     "RIDAGEYR",
     "INDFMPIR",
@@ -147,5 +147,5 @@
     "BPQ101D": "On cholesterol-lowering medication",
     "HUQ010": "General health (self-rated)"
   },
-  "decision_threshold": 0.4729225569703006
+  "decision_threshold": 0.07845417661366169
 }

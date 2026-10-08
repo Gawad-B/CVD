@@ -5,18 +5,18 @@
   },
   {
     "label": "Self-rated health (poorer)",
-    "value": 84
+    "value": 77
   },
   {
-    "label": "On cholesterol medication",
+    "label": "High blood pressure (history)",
+    "value": 52
+  },
+  {
+    "label": "High cholesterol (history)",
     "value": 49
   },
   {
     "label": "Ever smoked",
-    "value": 42
-  },
-  {
-    "label": "High blood pressure (history)",
-    "value": 40
+    "value": 38
   }
 ]

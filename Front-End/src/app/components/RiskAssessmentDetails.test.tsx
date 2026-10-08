@@ -90,7 +90,7 @@ describe("RiskAssessmentDetails", () => {
     expect(items[1]).toHaveTextContent("dr.kim");
     expect(screen.getByText(/Model’s original recommendation/).closest("p")).toHaveTextContent("Model recommendation text.");
     expect(screen.getByRole("link", { name: "View heart on dashboard" })).toHaveAttribute("href", "/dashboard?assessment=41");
-    expect(screen.getByText(/not an absolute risk/)).toBeInTheDocument();
+    expect(screen.getByText(/not a 10-year risk/)).toBeInTheDocument();
   });
 
   it("lists inputs with labels, 'Not recorded' for nulls and the heart rate caveat", async () => {

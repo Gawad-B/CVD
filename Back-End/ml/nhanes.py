@@ -89,12 +89,16 @@ FEATURE_LABELS = {
 _MISSING_CODES = {7, 9, 77, 99, 777, 999, 7777, 9999}
 _RACE_CODES = {1: "mexican", 2: "other_hispanic", 3: "white", 4: "black", 6: "asian", 7: "other"}
 
+# Treatment inputs (BP and cholesterol medication) are collected for AHA PREVENT but kept out of
+# the ML model: with a cross-sectional "already diagnosed" label they act as proxies for the
+# diagnosis. The notebook measures the effect of adding them back (MEDICATION_COLUMNS).
+MEDICATION_COLUMNS = ["bp_meds", "chol_meds"]
 FEATURE_COLUMNS = [
     "age", "male", "education", "income_ratio", "bmi", "waist", "sbp", "dbp", "pulse_pressure",
     "total_chol", "hdl", "non_hdl", "tc_hdl_ratio", "hba1c", "log_crp", "sodium", "wbc", "hgb",
     "platelets", "rdw", "egfr", "log_trig", "uric_acid", "glucose", "log_uacr", "sleep_weekday",
     "sleep_weekend", "sedentary_min", "smoker_ever", "smoke_now", "diabetes", "high_bp_hx",
-    "high_chol_hx", "bp_meds", "chol_meds", "gen_health",
+    "high_chol_hx", "gen_health",
 ] + [f"race_{name}" for name in _RACE_CODES.values()]
 
 
@@ -122,7 +126,10 @@ def ckd_epi_2021(creatinine_mg_dl: pd.Series, age: pd.Series, male: pd.Series) -
 
 
 class NhanesFeatures(BaseEstimator, TransformerMixin):
-    """Stateless: raw NHANES-coded columns -> numeric model features (FEATURE_COLUMNS)."""
+    """Stateless: raw NHANES-coded columns -> numeric model features (`columns`, FEATURE_COLUMNS by default)."""
+
+    def __init__(self, columns=None):
+        self.columns = columns
 
     def fit(self, X, y=None):
         return self
@@ -175,17 +182,30 @@ class NhanesFeatures(BaseEstimator, TransformerMixin):
         race = _code(raw, "RIDRETH3")
         for code, name in _RACE_CODES.items():
             f[f"race_{name}"] = (race == code).astype(float).where(race.notna())
-        return f[FEATURE_COLUMNS]
+        return f[list(self.columns or FEATURE_COLUMNS)]
 
 
-def build_pipeline(model) -> Pipeline:
+def build_pipeline(model, columns=None) -> Pipeline:
     """Raw NHANES columns -> features -> median imputation (+ missing flags) -> scaling -> model."""
     return Pipeline([
-        ("features", NhanesFeatures()),
+        ("features", NhanesFeatures(columns)),
         ("impute", SimpleImputer(strategy="median", add_indicator=True)),
         ("scale", StandardScaler()),
         ("model", model),
     ])
+
+
+def model_coefficients(pipeline: Pipeline) -> pd.Series:
+    """Standardised logistic-regression coefficients per model feature (missing-flag columns dropped).
+
+    Works for a plain LogisticRegression and for a sigmoid-calibrated one (CalibratedClassifierCV),
+    where the coefficients of the per-fold models are averaged.
+    """
+    model = pipeline.named_steps["model"]
+    fitted = [c.estimator for c in model.calibrated_classifiers_] if hasattr(model, "calibrated_classifiers_") else [model]
+    columns = list(pipeline.named_steps["features"].columns or FEATURE_COLUMNS)
+    coef = np.mean([m.coef_[0][: len(columns)] for m in fitted], axis=0)
+    return pd.Series(coef, index=columns)
 
 
 def _read_table(table: str, cache_dir: Optional[Path]) -> pd.DataFrame:

@@ -1,38 +1,128 @@
 {
   "model_name": "CVD NHANES Logistic",
-  "model_version": "4.0.0",
-  "algorithm": "Logistic regression (C=0.01)",
-  "trained_at": "2026-10-07T15:58:31.813824+00:00",
+  "model_version": "4.1.0",
+  "algorithm": "Logistic regression (C=0.01), sigmoid-calibrated (5-fold)",
+  "trained_at": "2026-10-08T06:23:21.117930+00:00",
   "data": "NHANES 2021-2023, adults 18+ with measured BP and cholesterol",
   "label": "Doctor-diagnosed CHF, CHD, angina, heart attack or stroke (MCQ160B-F)",
+  "excluded_inputs": "BP and cholesterol medication (collected for AHA PREVENT only)",
   "n_train": 4264,
   "n_test": 1066,
   "prevalence": 0.124765478424015,
-  "decision_threshold": 0.4729225569703006,
-  "auc": 0.8636140189702552,
+  "threshold_rule": "highest out-of-fold training score with sensitivity >= 0.9",
+  "decision_threshold": 0.07845417661366169,
+  "risk_bands": {
+    "low_max": 0.07845417661366169,
+    "medium_max": 0.2532236698602802
+  },
+  "auc": 0.8606161706517098,
   "auc_ci95": [
-    0.8322317046635883,
-    0.8923927584233896
+    0.8293619901844644,
+    0.8902191169241431
   ],
-  "cv_auc": 0.873,
-  "sensitivity": 0.8421052631578947,
-  "recall": 0.8421052631578947,
-  "specificity": 0.7331189710610932,
-  "balanced_accuracy": 0.787612117109494,
-  "precision": 0.31024930747922436,
-  "accuracy": 0.7467166979362101,
-  "f1": 0.4534412955465587,
-  "pr_auc": 0.4793594877313697,
-  "brier": 0.1599032418074694,
+  "cv_auc": 0.8711025957175899,
+  "model_comparison_cv_auc": {
+    "Logistic regression (C=0.01)": 0.871,
+    "Logistic regression (C=0.1)": 0.868,
+    "Logistic regression (C=1)": 0.866,
+    "Neural network (MLP)": 0.844,
+    "SVM (RBF)": 0.854,
+    "Random forest": 0.865,
+    "HistGradientBoosting": 0.86,
+    "LightGBM": 0.873,
+    "XGBoost": 0.873,
+    "Stack (LR + XGBoost + HGB + MLP)": 0.875
+  },
+  "pr_auc": 0.4892188390997581,
+  "sensitivity": 0.9022556390977443,
+  "recall": 0.9022556390977443,
+  "specificity": 0.6334405144694534,
+  "precision": 0.2597402597402597,
+  "ppv": 0.2597402597402597,
+  "npv": 0.9784768211920529,
+  "balanced_accuracy": 0.7678480767835989,
+  "accuracy": 0.6669793621013134,
+  "f1": 0.40336134453781514,
+  "flagged_share": 0.4333958724202627,
+  "high_band": {
+    "sensitivity": 0.6240601503759399,
+    "specificity": 0.8703108252947481,
+    "ppv": 0.4068627450980392,
+    "npv": 0.9419953596287703
+  },
+  "brier": 0.08322374876131892,
+  "ece": 0.020467149433299484,
+  "mean_predicted": 0.13503970071097166,
+  "observed_rate": 0.124765478424015,
+  "calibration": [
+    {
+      "mean_predicted": 0.004925475418870654,
+      "observed_rate": 0.0
+    },
+    {
+      "mean_predicted": 0.010375388426766788,
+      "observed_rate": 0.0
+    },
+    {
+      "mean_predicted": 0.016864653512357688,
+      "observed_rate": 0.02830188679245283
+    },
+    {
+      "mean_predicted": 0.026676460211407037,
+      "observed_rate": 0.009345794392523364
+    },
+    {
+      "mean_predicted": 0.04280873690383893,
+      "observed_rate": 0.04716981132075472
+    },
+    {
+      "mean_predicted": 0.07144978832871726,
+      "observed_rate": 0.037383177570093455
+    },
+    {
+      "mean_predicted": 0.12021616823885091,
+      "observed_rate": 0.1509433962264151
+    },
+    {
+      "mean_predicted": 0.19340936432459138,
+      "observed_rate": 0.19626168224299065
+    },
+    {
+      "mean_predicted": 0.3130674726253886,
+      "observed_rate": 0.25471698113207547
+    },
+    {
+      "mean_predicted": 0.5501623610669325,
+      "observed_rate": 0.5233644859813084
+    }
+  ],
   "confusion_matrix": [
     [
-      684,
-      249
+      591,
+      342
     ],
     [
-      21,
-      112
+      13,
+      120
     ]
   ],
-  "note": "Cross-sectional label (existing diagnosed CVD). Class-weighted training: scores are not calibrated probabilities. Accuracy is at 12.5% prevalence; see balanced_accuracy."
+  "note": "Cross-sectional label (existing diagnosed CVD): the score estimates the probability of already-diagnosed CVD in this population, not a 10-year risk. Use AHA PREVENT for that.",
+  "leakage_check": {
+    "served model (no medication inputs)": {
+      "test AUC": 0.8606161706517098,
+      "test PR-AUC": 0.4892188390997581
+    },
+    "+ BP and cholesterol medication": {
+      "test AUC": 0.8634609030615124,
+      "test PR-AUC": 0.48151128510702385
+    },
+    "- diagnosis history (high BP, high cholesterol, diabetes)": {
+      "test AUC": 0.8525252036844523,
+      "test PR-AUC": 0.4694991671230884
+    },
+    "- diagnosis history - self-rated health": {
+      "test AUC": 0.8247467543456711,
+      "test PR-AUC": 0.4174489800340885
+    }
+  }
 }
