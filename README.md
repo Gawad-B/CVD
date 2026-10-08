@@ -48,7 +48,7 @@ Cardiology Screening System/
 │   ├── requirements.txt    # Runtime dependencies
 │   ├── requirements-dev.txt # Test dependencies (pytest, httpx)
 │   ├── ml/                 # features.py, train.py, inference.py, explain.py
-│   ├── model/              # notebook export (preprocessor + 4 base models + meta-learner), feature_schema.json, metrics_ml.json
+│   ├── model/              # cvd_nhanes_v2.ipynb, cvd_pipeline.joblib, feature_schema.json, metrics_ml.json, NHANES dataset
 │   ├── scripts/            # migrate.py, seed_admin.py, encrypt_patient_data.py, purge_expired_demos.py, test_db.sh
 │   ├── tests/              # pytest suite
 │   └── database/
@@ -170,11 +170,11 @@ python Back-End/scripts/encrypt_patient_data.py --apply    # encrypts rows and c
 ### Encounters & Risk Assessment
 - Create encounters with optional clinical notes
 - Comprehensive risk assessment form with:
-  - **Mandatory fields** (the model's top-20 feature importance, plus diastolic BP and smoker status): age (auto-derived from DOB), BMI, waist, systolic and diastolic BP, history of high BP, BP medication, total cholesterol, HDL, HbA1c, hs-CRP, WBC, hemoglobin, platelets, RDW, income ratio, smoker status
-  - **Optional fields** (imputed when blank): diabetic status, high-cholesterol history, cholesterol medication, sodium, activity, sleep, race, education
+  - **Mandatory fields** (AHA PREVENT inputs plus the strongest ML inputs): age (auto-derived from DOB), BMI, systolic and diastolic BP, history of high BP, BP medication (if high BP), total cholesterol, HDL, history of high cholesterol, cholesterol-lowering medication, creatinine, HbA1c, diabetes status, ever smoked, smokes now (if ever smoked), self-rated general health
+  - **Optional fields** (imputed when blank): waist, urine albumin/creatinine, triglycerides, glucose, uric acid, hs-CRP, sodium, blood counts (WBC, hemoglobin, platelets, RDW), sleep, sedentary time, income ratio, race, education
   - **Additional fields**: Custom feature entries for extensibility
 - Inputs are range-checked against clinical limits; the age derived from DOB must be 18-120 (the model is adult-only)
-- ML-powered risk prediction using a stacked ensemble (XGBoost, LightGBM, random forest, logistic regression and a logistic meta-learner)
+- Risk assessment combining the AHA PREVENT 10-year CVD equations, an ML model trained on NHANES 2021–2023 and guideline clinical alerts
 - Response includes `missingInputs` (fields the model had to impute), `modelVersion`, and per-prediction `contributions`. Contributions describe how sensitive the model is to each input; they are not clinical importance or causal claims
 - Risk score calculation with recommendation mapping
 - Risk assessments are soft-deleted and record the reviewer who set the review status
@@ -428,7 +428,7 @@ This project follows an engineering-first, data-driven approach to cardiology ri
 
 - Data collection: capture structured clinical values and optional free-text notes during encounters to ensure reproducible inputs for ML models.
 - Deterministic feature building: encounter data is validated against clinical ranges and normalized (units, coded values, missing-value encodings) in `ml/features.py` / `ml/inference.py` before prediction.
-- Stacked ensemble: `ml/stacked.py` replays the training notebook exactly (feature engineering, log1p on skewed columns, the saved preprocessor, four base models, meta-learner), so serving matches training to about 1e-16.
+- Shared features: `ml/nhanes.py` is imported by both the training notebook and the API, so serving computes features exactly as in training.
 - Recommendation mapping: probabilities are mapped to Low / Medium / High via `LOW_RISK_MAX_PROBABILITY` and `MEDIUM_RISK_MAX_PROBABILITY`, and to recommendations via rules in `cds_rules`.
 - Auditable inference: every prediction stores the model id, input feature values, probability, and recommendation for traceability and post-hoc analysis.
 
@@ -443,7 +443,7 @@ The system is a three-tier web application with clear separation of concerns:
 Integration points and key flows:
 
 - API Client → Back-End: front-end sends normalized requests; `client.ts` converts camelCase ↔ snake_case and attaches `Authorization: Bearer <token>`.
-- Risk Prediction Flow: `POST /api/predict` loads the active model from `model_registry`, merges request values with encounter defaults, runs the stacked pipeline → maps probability to a recommendation via `cds_rules`, and returns/stores the result.
+- Risk Prediction Flow: `POST /api/predict` loads the active model from `model_registry`, merges request values with encounter defaults, runs the ML pipeline and AHA PREVENT, applies clinical alerts → maps the level to a recommendation via `cds_rules`, and returns/stores the result.
 - Model Artifacts: serialized artifacts live in `Back-End/model/` (`preprocessor_ml.joblib`, `model_{xgb,lgbm,rf,lr}.joblib`, `meta_learner.joblib`, `feature_schema.json`, `metrics_ml.json`). The back-end loads them once per process from `MODEL_DIR`.
 
 ## Data Flow & Storage
@@ -454,31 +454,26 @@ Integration points and key flows:
 
 ## Model
 
-- Ensemble: base models (XGBoost, LightGBM, random forest, logistic regression) trained on the full training set, combined by a logistic-regression meta-learner. Trained in the Kaggle notebook `cvd_ml_fulltrain` (seed 42).
-- Updating the model: copy the notebook's outputs (`preprocessor_ml.joblib`, `model_*.joblib`, `meta_learner.joblib`, `metrics_ml.json`, `test_probs_stack.npy`) into `Back-End/model/`, then from `Back-End/`:
+The risk shown to clinicians combines three parts:
 
-```bash
-python scripts/build_model_metadata.py
-python scripts/export_global_importance.py
-```
+1. **AHA PREVENT 10-year CVD risk** (`Back-End/ml/prevent.py`): the published equations (Khan et al., *Circulation* 2024) built from long-term follow-up cohorts. They use age, sex, total and HDL cholesterol, systolic BP, BP and cholesterol medication, diabetes, current smoking and eGFR (from creatinine, CKD-EPI 2021), plus HbA1c and urine albumin/creatinine when given. Valid for ages 30–79 and in-range inputs; otherwise the app says why and falls back to the ML level. Categories: <5% low, 5–20% medium (borderline/intermediate), ≥20% high. Unit-tested against the published worked examples.
+2. **NHANES ML model** (`Back-End/model/cvd_nhanes_v2.ipynb`, served as `model/cvd_pipeline.joblib`): logistic regression on 34 raw inputs from 5,330 NHANES 2021–2023 adults. Label: doctor-diagnosed heart failure, coronary heart disease, angina, heart attack or stroke. Feature code is shared between training and serving (`Back-End/ml/nhanes.py`).
+3. **Clinical alerts** (`Back-End/clinical_alerts.py`): guideline thresholds on the raw readings that can raise, never lower, the level.
 
-  The first script checks that the app reproduces the notebook's saved test probabilities and writes `feature_schema.json` plus the extra fields in `metrics_ml.json`; the second refreshes the landing-page feature importance. Update `Front-End/src/app/landing/modelFacts.ts` by hand.
-- Current test metrics (`model/metrics_ml.json`, model version 3.0.0, 536 train / 134 test rows):
+Test results of the ML model (`model/metrics_ml.json`, version 4.0.0; 4,264 train / 1,066 test; threshold chosen by cross-validation on the training set; test set used once):
 
 | Metric | Value |
 |---|---|
-| Accuracy | 0.836 |
-| ROC AUC | 0.886 (95% CI 0.827-0.936) |
-| Precision / recall / specificity | 0.808 / 0.881 / 0.791 |
-| F1 | 0.843 |
-| Decision threshold | 0.5075 |
+| ROC AUC | 0.864 (95% CI 0.832–0.892); 5-fold CV AUC 0.873 |
+| Sensitivity / specificity | 0.842 / 0.733 |
+| Balanced accuracy | 0.788 |
+| Accuracy at 12.5% prevalence | 0.747 |
 
-- **Threshold caveat:** the notebook tunes the decision threshold on the test set, so test accuracy is slightly optimistic. ROC AUC does not depend on the threshold.
-- Feature importance (landing page and `model/feature_importance.png`): average of the normalised XGBoost, LightGBM and random-forest importances. Top inputs: BP medication, HbA1c × age, age, total cholesterol, high blood pressure.
-- `python -m ml.train <output-dir>` trains an alternative single-pipeline model (out-of-fold threshold) into a separate folder for comparison; it is not served.
-- **Prevalence caveat:** the dataset is class-balanced (about 50% prevalence), so probabilities are not calibrated to a real clinical population and should not be read as absolute risk. The test set is small, hence the wide AUC interval.
-- **Known limitations:** Diabetes=Yes can lower the estimate for some high-risk profiles (likely treatment confounding in NHANES, where diagnosed diabetics are treated). Scores are not calibrated to population prevalence and are shown in the UI as a "Model score", not an absolute risk. The activity inputs follow NHANES semantics: `vigorousActivityMinutes` and `moderateActivityMinutes` are session counts per unit (PAD810Q/PAD790Q), `sedentaryMinutes` is minutes per moderate session (PAD800) and `sedentaryMinutesAlt` is sedentary minutes per day (PAD680); the API names are kept for compatibility.
-- Per-prediction `contributions` show model sensitivity to each input, not clinical importance. The tool supports screening and is not a diagnosis.
+- **Why not higher, and why PREVENT is the main risk:** NHANES is a snapshot, and the label is *already-diagnosed* CVD. Diagnosed patients are treated, so their measured cholesterol and BP are lower (mean total cholesterol 159 mg/dL in CVD patients on statins vs 196 in people without CVD or statins). The ML model therefore cannot learn "higher readings → higher risk" and does not raise its score for them; the notebook documents this (section 7). The learning curve flattens, and logistic regression ties a LightGBM/random-forest stack, so the ceiling is the data, not the algorithm. Read the ML score as "how closely the profile resembles people living with diagnosed CVD".
+- **Retraining:** run `Back-End/model/cvd_nhanes_v2.ipynb` from `Back-End/model/` (it downloads the NHANES tables from the CDC into the git-ignored `model/nhanes_cache/`, writes `nhanes_cvd_2021_2023.csv`, the pipeline, `feature_schema.json`, `metrics_ml.json` and the figures). Then run `python scripts/export_global_importance.py` from `Back-End/` and update `Front-End/src/app/landing/modelFacts.ts`.
+- **Clinical alerts:** hypertensive crisis (≥180/120, critical), stage 2 hypertension (≥140/90), total cholesterol ≥240, HbA1c ≥6.5 (warnings), plus low HDL, smoking, obesity and hs-CRP >10 (notes). A critical alert or three major risk factors raise the level to at least High; any warning raises it to at least Medium.
+- Each assessment stores `explanation_json` with `prevent`, `modelRiskLevel` (ML), `baseRiskLevel` and `riskSource` (before alerts), and `clinicalAlerts`; the result and assessment pages show all of them.
+- Per-prediction `contributions` show the ML model's sensitivity to each input, not clinical importance. The tool supports screening and is not a diagnosis.
 - Each stored assessment records `model_id`; the active version is tracked in `model_registry`.
 
 ## Security, Privacy & Compliance

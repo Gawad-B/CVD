@@ -30,32 +30,38 @@ SYNTHETIC_PATIENTS: List[Dict[str, Any]] = [
     {
         "code": "DEMO-001", "firstName": "Alder", "lastName": "Fennimore", "sex": "male", "age": 79, "heartRate": 82,
         "inputs": {"sbp": 168, "dbp": 96, "total_cholesterol": 268, "hdl": 34, "bmi": 33.5, "hba1c": 8.1,
-                   "smoker": "yes", "diabetic": "yes", "highBp": "yes", "highChol": "yes", "bpMed": "yes"},
+                   "smoker": "yes", "diabetic": "yes", "highBp": "yes", "highChol": "yes", "bpMed": "yes",
+                   "smokesNow": "yes", "cholMed": "yes", "creatinine": 1.4},
     },
     {
         "code": "DEMO-002", "firstName": "Marisol", "lastName": "Quill", "sex": "female", "age": 66, "heartRate": None,
-        "inputs": {"sbp": 152, "dbp": 88, "total_cholesterol": 242, "hdl": 41, "bmi": 31.2, "hba1c": 6.9,
-                   "smoker": "no", "diabetic": "borderline", "highBp": "yes", "highChol": "yes"},
+        "inputs": {"sbp": 152, "dbp": 88, "total_cholesterol": 232, "hdl": 41, "bmi": 31.2, "hba1c": 6.9,
+                   "smoker": "no", "diabetic": "borderline", "highBp": "yes", "highChol": "yes",
+                   "bpMed": "yes", "cholMed": "no", "creatinine": 0.9},
     },
     {
         "code": "DEMO-003", "firstName": "Teodor", "lastName": "Brisbane", "sex": "male", "age": 58, "heartRate": 74,
         "inputs": {"sbp": 138, "dbp": 86, "total_cholesterol": 221, "hdl": 44, "bmi": 28.9, "hba1c": 5.9,
-                   "smoker": "yes", "diabetic": "no", "highBp": "no", "highChol": "yes"},
+                   "smoker": "yes", "diabetic": "no", "highBp": "no", "highChol": "yes",
+                   "smokesNow": "yes", "cholMed": "no", "creatinine": 1.0},
     },
     {
         "code": "DEMO-004", "firstName": "Imogen", "lastName": "Larkspur", "sex": "female", "age": 51, "heartRate": None,
         "inputs": {"sbp": 126, "dbp": 82, "total_cholesterol": 205, "hdl": 52, "bmi": 27.4, "hba1c": 5.5,
-                   "smoker": "no", "diabetic": "no", "highBp": "no", "highChol": "no"},
+                   "smoker": "no", "diabetic": "no", "highBp": "no", "highChol": "no",
+                   "cholMed": "no", "creatinine": 0.8},
     },
     {
         "code": "DEMO-005", "firstName": "Cassian", "lastName": "Wrenfield", "sex": "male", "age": 44, "heartRate": 68,
         "inputs": {"sbp": 118, "dbp": 76, "total_cholesterol": 180, "hdl": 58, "bmi": 24.6, "hba1c": 5.2,
-                   "smoker": "no", "diabetic": "no", "highBp": "no", "highChol": "no"},
+                   "smoker": "no", "diabetic": "no", "highBp": "no", "highChol": "no",
+                   "cholMed": "no", "creatinine": 0.8},
     },
     {
         "code": "DEMO-006", "firstName": "Perpetua", "lastName": "Ashdown", "sex": "female", "age": 38, "heartRate": None,
         "inputs": {"sbp": 108, "dbp": 68, "total_cholesterol": 168, "hdl": 66, "bmi": 22.1, "hba1c": 5.0,
-                   "smoker": "no", "diabetic": "no", "highBp": "no", "highChol": "no"},
+                   "smoker": "no", "diabetic": "no", "highBp": "no", "highChol": "no",
+                   "cholMed": "no", "creatinine": 0.8},
     },
 ]
 

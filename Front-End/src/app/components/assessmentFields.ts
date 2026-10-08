@@ -1,5 +1,5 @@
 import type { RiskAssessmentRequest } from "../api/types";
-import { ACTIVITY_UNIT_OPTIONS, EDUCATION_OPTIONS, INPUT_RANGES, RACE_OPTIONS } from "./clinicalConstants";
+import { EDUCATION_OPTIONS, GENERAL_HEALTH_OPTIONS, INPUT_RANGES, RACE_OPTIONS } from "./clinicalConstants";
 import { MAX_PATIENT_AGE, MIN_PATIENT_AGE } from "./dateOfBirth";
 
 export type FormValues = Record<string, string>;
@@ -8,15 +8,17 @@ export type FormErrors = Record<string, string>;
 export const HEART_RATE_MIN = 30;
 export const HEART_RATE_MAX = 220;
 
-interface NumberField {
-  kind: "number";
+interface FieldBase {
   name: string;
   label: string;
+  /** Shown (and, for required fields, required) only when this returns true. */
+  when?: (values: FormValues) => boolean;
 }
-interface SelectField {
+interface NumberField extends FieldBase {
+  kind: "number";
+}
+interface SelectField extends FieldBase {
   kind: "select";
-  name: string;
-  label: string;
   options: ReadonlyArray<{ value: string; label: string }>;
 }
 export type AssessmentField = NumberField | SelectField;
@@ -34,46 +36,51 @@ export const DIABETIC_OPTIONS = [
   { value: "yes", label: "Yes" },
 ] as const;
 
+/** Whether a field applies given the current answers (NHANES skip patterns). */
+export const isShown = (field: AssessmentField, values: FormValues) => !field.when || field.when(values);
+
 /**
- * Required inputs: every model input in the notebook's top-20 feature importance
- * (Back-End/model/feature_importance.png), directly or through an engineered feature
- * (hba1c_age, bmi_age, sbp_age, tc_hdl_ratio, waist_bmi), plus diastolic BP and smoker status
- * (clinically expected). Age comes from the date of birth.
+ * Required inputs: everything the AHA PREVENT 10-year risk needs (age from the date of birth, sex
+ * from the patient record, BP, cholesterol, kidney function via creatinine, diabetes, current
+ * smoking, BP and cholesterol medication, HbA1c) plus the strongest inputs of the NHANES model.
  */
 export const REQUIRED_FIELDS: readonly AssessmentField[] = [
   NUM("bmi", "BMI (kg/m²)"),
-  NUM("waistCm", "Waist (cm)"),
   NUM("systolicBp", "Systolic BP (mmHg)"),
   NUM("diastolicBp", "Diastolic BP (mmHg)"),
   { kind: "select", name: "highBp", label: "History of high BP", options: YES_NO_OPTIONS },
-  { kind: "select", name: "bpMed", label: "On BP medication", options: YES_NO_OPTIONS },
+  { kind: "select", name: "bpMed", label: "On BP medication", options: YES_NO_OPTIONS, when: (v) => v.highBp === "yes" },
   NUM("totalCholesterol", "Total cholesterol (mg/dL)"),
   NUM("hdl", "HDL (mg/dL)"),
+  { kind: "select", name: "highChol", label: "History of high cholesterol", options: YES_NO_OPTIONS },
+  { kind: "select", name: "cholMed", label: "On cholesterol-lowering medication", options: YES_NO_OPTIONS },
+  NUM("creatinine", "Creatinine (mg/dL)"),
   NUM("hba1cPercent", "HbA1c (%)"),
+  { kind: "select", name: "diabetic", label: "Diabetic", options: DIABETIC_OPTIONS },
+  { kind: "select", name: "smoker", label: "Ever smoked (100+ cigarettes)", options: YES_NO_OPTIONS },
+  { kind: "select", name: "smokesNow", label: "Smokes now", options: YES_NO_OPTIONS, when: (v) => v.smoker === "yes" },
+  { kind: "select", name: "generalHealth", label: "Self-rated general health", options: GENERAL_HEALTH_OPTIONS },
+];
+
+/** Lower-weight inputs; all optional, blank means "not recorded" (the API imputes and reports it). */
+export const MORE_FIELDS: readonly AssessmentField[] = [
+  NUM("waistCm", "Waist (cm)"),
+  NUM("urineAcr", "Urine albumin/creatinine (mg/g)"),
+  NUM("triglycerides", "Triglycerides (mg/dL)"),
+  NUM("glucose", "Glucose (mg/dL)"),
+  NUM("uricAcid", "Uric acid (mg/dL)"),
   NUM("hsCrp", "hs-CRP (mg/L)"),
+  NUM("sodium", "Sodium (mmol/L)"),
   NUM("wbc", "WBC (10³/µL)"),
   NUM("hemoglobin", "Hemoglobin (g/dL)"),
   NUM("platelets", "Platelets (10³/µL)"),
   NUM("rdw", "RDW (%)"),
-  NUM("incomeRatio", "Income ratio (INDFMPIR)"),
-  { kind: "select", name: "smoker", label: "Smoker", options: YES_NO_OPTIONS },
-];
-
-/** Inputs outside the top-20 importance; all optional, blank means "not recorded" (the API imputes and reports it). */
-export const MORE_FIELDS: readonly AssessmentField[] = [
-  { kind: "select", name: "diabetic", label: "Diabetic", options: DIABETIC_OPTIONS },
-  { kind: "select", name: "highChol", label: "History of high cholesterol", options: YES_NO_OPTIONS },
-  { kind: "select", name: "cholMed", label: "On cholesterol medication", options: YES_NO_OPTIONS },
-  NUM("sodium", "Sodium (mmol/L)"),
-  NUM("vigorousActivityMinutes", "Vigorous activity sessions per unit"),
-  NUM("moderateActivityMinutes", "Moderate activity sessions per unit"),
-  { kind: "select", name: "moderateActivityUnit", label: "Activity frequency unit (PAD790U)", options: ACTIVITY_UNIT_OPTIONS },
-  NUM("sedentaryMinutes", "Moderate activity minutes per session"),
-  NUM("sedentaryMinutesAlt", "Sedentary minutes per day (PAD680)"),
   NUM("sleepHoursWeekday", "Sleep, weekday (hours)"),
   NUM("sleepHoursWeekend", "Sleep, weekend (hours)"),
-  { kind: "select", name: "race", label: "Race/ethnicity (RIDRETH3)", options: RACE_OPTIONS },
-  { kind: "select", name: "education", label: "Education (DMDEDUC2)", options: EDUCATION_OPTIONS },
+  NUM("sedentaryMinutesAlt", "Sedentary minutes per day"),
+  NUM("incomeRatio", "Income-to-poverty ratio"),
+  { kind: "select", name: "race", label: "Race/ethnicity", options: RACE_OPTIONS },
+  { kind: "select", name: "education", label: "Education", options: EDUCATION_OPTIONS },
 ];
 
 export function initialValues(): FormValues {
@@ -104,8 +111,9 @@ export function validateAssessment(values: FormValues, age: number | null): Form
   }
 
   for (const field of REQUIRED_FIELDS) {
+    if (!isShown(field, values)) continue;
     const raw = values[field.name];
-    if (isBlank(raw)) errors[field.name] = field.kind === "select" ? "Choose Yes/No." : "Required.";
+    if (isBlank(raw)) errors[field.name] = field.kind === "select" ? "Choose an option." : "Required.";
     else if (field.kind === "number") {
       const problem = rangeError(field.label, field.name, raw);
       if (problem) errors[field.name] = problem;
@@ -119,11 +127,7 @@ export function validateAssessment(values: FormValues, age: number | null): Form
     if (problem) errors[field.name] = problem;
   }
 
-  if (
-    !errors.systolicBp &&
-    !errors.diastolicBp &&
-    Number(values.systolicBp) <= Number(values.diastolicBp)
-  ) {
+  if (!errors.systolicBp && !errors.diastolicBp && Number(values.systolicBp) <= Number(values.diastolicBp)) {
     errors.diastolicBp = "Systolic BP must be greater than diastolic BP.";
   }
 
@@ -140,39 +144,44 @@ export function validateAssessment(values: FormValues, age: number | null): Form
 type YesNo = "yes" | "no";
 
 const optionalNumber = (raw: string | undefined): number | undefined => (isBlank(raw) ? undefined : Number(raw));
-const optionalChoice = (raw: string | undefined): string | undefined => (isBlank(raw) ? undefined : raw);
 
 /** Build the API payload from validated form values. Blank optional inputs are omitted; heartRate only when given. */
 export function buildAssessmentPayload(values: FormValues, age: number): RiskAssessmentRequest["payload"] {
+  const smoker = values.smoker as YesNo;
+  const highBp = values.highBp as YesNo;
   const payload: RiskAssessmentRequest["payload"] = {
     age,
     bmi: Number(values.bmi),
-    waistCm: Number(values.waistCm),
     systolicBp: Number(values.systolicBp),
     diastolicBp: Number(values.diastolicBp),
-    highBp: values.highBp as YesNo,
-    bpMed: values.bpMed as YesNo,
+    highBp,
+    // Questions that do not apply are answered by the skip pattern: no high BP -> no BP medication.
+    bpMed: highBp === "yes" ? (values.bpMed as YesNo) : "no",
     totalCholesterol: Number(values.totalCholesterol),
     hdl: Number(values.hdl),
+    highChol: values.highChol as YesNo,
+    cholMed: values.cholMed as YesNo,
+    creatinine: Number(values.creatinine),
     hba1cPercent: Number(values.hba1cPercent),
-    hsCrp: Number(values.hsCrp),
-    wbc: Number(values.wbc),
-    hemoglobin: Number(values.hemoglobin),
-    platelets: Number(values.platelets),
-    rdw: Number(values.rdw),
-    incomeRatio: Number(values.incomeRatio),
-    smoker: values.smoker as YesNo,
-    diabetic: optionalChoice(values.diabetic) as "yes" | "no" | "borderline" | undefined,
-    highChol: optionalChoice(values.highChol) as YesNo | undefined,
-    cholMed: optionalChoice(values.cholMed) as YesNo | undefined,
+    diabetic: values.diabetic as "yes" | "no" | "borderline",
+    smoker,
+    smokesNow: smoker === "yes" ? (values.smokesNow as YesNo) : "no",
+    generalHealth: Number(values.generalHealth),
+    waistCm: optionalNumber(values.waistCm),
+    urineAcr: optionalNumber(values.urineAcr),
+    triglycerides: optionalNumber(values.triglycerides),
+    glucose: optionalNumber(values.glucose),
+    uricAcid: optionalNumber(values.uricAcid),
+    hsCrp: optionalNumber(values.hsCrp),
     sodium: optionalNumber(values.sodium),
-    vigorousActivityMinutes: optionalNumber(values.vigorousActivityMinutes),
-    moderateActivityMinutes: optionalNumber(values.moderateActivityMinutes),
-    moderateActivityUnit: optionalNumber(values.moderateActivityUnit),
-    sedentaryMinutes: optionalNumber(values.sedentaryMinutes),
-    sedentaryMinutesAlt: optionalNumber(values.sedentaryMinutesAlt),
+    wbc: optionalNumber(values.wbc),
+    hemoglobin: optionalNumber(values.hemoglobin),
+    platelets: optionalNumber(values.platelets),
+    rdw: optionalNumber(values.rdw),
     sleepHoursWeekday: optionalNumber(values.sleepHoursWeekday),
     sleepHoursWeekend: optionalNumber(values.sleepHoursWeekend),
+    sedentaryMinutesAlt: optionalNumber(values.sedentaryMinutesAlt),
+    incomeRatio: optionalNumber(values.incomeRatio),
     race: optionalNumber(values.race),
     education: optionalNumber(values.education),
     notes: values.notes.trim() === "" ? undefined : values.notes,

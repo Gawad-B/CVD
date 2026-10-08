@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
+import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -19,16 +20,18 @@ from psycopg2 import Binary
 from psycopg2.extras import Json, RealDictCursor
 
 BASE_DIR = Path(__file__).resolve().parent
-# ml.inference unpickles the pipeline, which imports ml.features: Back-End/ must be importable.
+# ml.inference unpickles the pipeline, which imports ml.nhanes: Back-End/ must be importable.
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from db_url import app_database_url  # noqa: E402
 from ml import explain as explain_module  # noqa: E402
 from ml import inference  # noqa: E402
-from ml.features import RAW_NUMERIC_COLUMNS  # noqa: E402
+from ml import prevent  # noqa: E402
+from ml.nhanes import RAW_NUMERIC_COLUMNS, ckd_epi_2021  # noqa: E402
 from phi_crypto import PhiDecryptionError, decrypt_text, encrypt_text, load_key, phi_aad  # noqa: E402
 import clinical  # noqa: E402
+import clinical_alerts  # noqa: E402
 import demo as demo_module  # noqa: E402
 from scoping import patient_scope_sql  # noqa: E402
 
@@ -173,6 +176,13 @@ class RiskAssessmentRequest(BaseModel):
     highChol: Optional[str] = None
     bpMed: Optional[str] = None
     cholMed: Optional[str] = None
+    smokesNow: Optional[str] = None
+    creatinine: Optional[float] = Field(default=None, ge=0.2, le=15)  # mg/dL
+    triglycerides: Optional[float] = Field(default=None, ge=20, le=3000)  # mg/dL
+    uricAcid: Optional[float] = Field(default=None, ge=1, le=20)  # mg/dL
+    glucose: Optional[float] = Field(default=None, ge=40, le=600)  # mg/dL
+    urineAcr: Optional[float] = Field(default=None, ge=0, le=25000)  # mg/g
+    generalHealth: Optional[float] = Field(default=None, ge=1, le=5)  # 1 excellent .. 5 poor
     heartRate: Optional[int] = Field(default=None, ge=30, le=220)  # stored with the assessment, never a model input
 
     @field_validator("race")
@@ -182,14 +192,14 @@ class RiskAssessmentRequest(BaseModel):
             raise ValueError("race must be one of 1, 2, 3, 4, 6, 7")
         return value
 
-    @field_validator("education", "moderateActivityUnit")
+    @field_validator("education", "moderateActivityUnit", "generalHealth")
     @classmethod
     def _check_integer_code(cls, value: Optional[float]) -> Optional[float]:
         if value is not None and value != int(value):
             raise ValueError("must be a whole number")
         return value
 
-    @field_validator("smoker", "physically_active", "highBp", "highChol", "bpMed", "cholMed")
+    @field_validator("smoker", "physically_active", "highBp", "highChol", "bpMed", "cholMed", "smokesNow")
     @classmethod
     def _check_yes_no(cls, value: Optional[str]) -> Optional[str]:
         if value is not None and value.strip().lower() not in {"yes", "no"}:
@@ -747,21 +757,21 @@ def ensure_cds_rules_seeded(db: Any) -> None:
     db.commit()
 
 
+RECOMMENDATION_BY_LEVEL = {
+    "low": "Low risk: continue healthy lifestyle and routine follow-up.",
+    "medium": "Moderate risk: schedule clinician follow-up and risk-factor management.",
+    "high": "High risk: prioritize clinician review and preventative intervention planning.",
+}
+
+
 def fallback_risk_classification(probability: float) -> Dict[str, str]:
     if probability < LOW_RISK_MAX_PROBABILITY:
-        return {
-            "risk_level": "low",
-            "recommendation": "Low risk: continue healthy lifestyle and routine follow-up.",
-        }
-    if probability < MEDIUM_RISK_MAX_PROBABILITY:
-        return {
-            "risk_level": "medium",
-            "recommendation": "Moderate risk: schedule clinician follow-up and risk-factor management.",
-        }
-    return {
-        "risk_level": "high",
-        "recommendation": "High risk: prioritize clinician review and preventative intervention planning.",
-    }
+        level = "low"
+    elif probability < MEDIUM_RISK_MAX_PROBABILITY:
+        level = "medium"
+    else:
+        level = "high"
+    return {"risk_level": level, "recommendation": RECOMMENDATION_BY_LEVEL[level]}
 
 
 @app.post("/api/auth/login")
@@ -1635,7 +1645,53 @@ def _assessment_inputs(payload: RiskAssessmentRequest) -> Dict[str, Any]:
         "high_chol": payload.highChol,
         "bp_med": payload.bpMed,
         "chol_med": payload.cholMed,
+        "smokes_now": payload.smokesNow,
+        "creatinine": payload.creatinine,
+        "triglycerides": payload.triglycerides,
+        "uric_acid": payload.uricAcid,
+        "glucose": payload.glucose,
+        "urine_acr": payload.urineAcr,
+        "general_health": payload.generalHealth,
     }
+
+
+# AHA PREVENT category -> app risk level (borderline and intermediate are both "medium").
+PREVENT_RISK_LEVEL = {"low": "low", "borderline": "medium", "intermediate": "medium", "high": "high"}
+
+
+def _prevent_for(inputs: Dict[str, Any], sex: Optional[str]) -> Dict[str, Any]:
+    """AHA PREVENT 10-year CVD risk from the assessment inputs (unavailable outside its validated use)."""
+
+    def number(key: str) -> Optional[float]:
+        value = inputs.get(key)
+        return float(value) if value is not None else None
+
+    def yes_no(key: str) -> Optional[bool]:
+        text = str(inputs.get(key) or "").strip().lower()
+        return True if text == "yes" else False if text == "no" else None
+
+    age, creatinine = number("age"), number("creatinine")
+    sex_text = str(sex or "").strip().lower() or None
+    egfr = None
+    if creatinine is not None and age is not None and sex_text in ("male", "female"):
+        egfr = float(ckd_epi_2021(pd.Series([creatinine]), pd.Series([age]),
+                                  pd.Series([1.0 if sex_text == "male" else 0.0])).iloc[0])
+    diabetic = str(inputs.get("diabetic") or "").strip().lower()
+    smoking = yes_no("smokes_now")
+    if smoking is None and yes_no("smoker") is False:
+        smoking = False
+    bp_tx = yes_no("bp_med")
+    if bp_tx is None and yes_no("high_bp") is False:
+        bp_tx = False
+    result = prevent.ten_year_cvd(
+        age=age, sex=sex_text, total_chol=number("total_cholesterol"), hdl=number("hdl"),
+        sbp=number("sbp"), diabetes={"yes": True, "no": False, "borderline": False}.get(diabetic),
+        smoking=smoking, bmi=number("bmi"), egfr=egfr, bp_tx=bp_tx, statin=yes_no("chol_med"),
+        hba1c=number("hba1c"), uacr=number("urine_acr"),
+    )
+    if result["available"]:
+        result = {**result, "risk": round(result["risk"], 4), "egfr": round(egfr, 1)}
+    return result
 
 
 def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, Any]) -> Dict[str, Any]:
@@ -1685,7 +1741,8 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
             )
         payload.age = float(derived_age)
 
-    raw_row = inference.build_raw_row(_assessment_inputs(payload), patient.get("sex"))
+    inputs = _assessment_inputs(payload)
+    raw_row = inference.build_raw_row(inputs, patient.get("sex"))
     missing = inference.missing_inputs(raw_row)
     probability = inference.predict_probability(raw_row)
     explanation = {
@@ -1703,9 +1760,24 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
     with db.cursor() as cursor:
         # Risk level is determined by app thresholds first to keep classification
         # consistent across environments even when CDS rule ranges drift.
-        fallback = fallback_risk_classification(probability)
-        risk_level = fallback["risk_level"]
-        recommendation = fallback["recommendation"]
+        model_risk_level = fallback_risk_classification(probability)["risk_level"]
+        # PREVENT (10-year CVD risk from long-term cohorts) sets the level when it applies; the
+        # cross-sectional ML model is the fallback. Guideline alerts can then raise (never lower) it.
+        prevent_result = _prevent_for(inputs, patient.get("sex"))
+        if prevent_result["available"]:
+            base_risk_level, risk_source = PREVENT_RISK_LEVEL[prevent_result["category"]], "prevent"
+        else:
+            base_risk_level, risk_source = model_risk_level, "model"
+        guideline = clinical_alerts.evaluate(inputs)
+        risk_level = clinical_alerts.apply_floor(base_risk_level, guideline["floor"])
+        explanation.update(
+            modelRiskLevel=model_risk_level,
+            baseRiskLevel=base_risk_level,
+            riskSource=risk_source,
+            prevent=prevent_result,
+            clinicalAlerts=guideline["alerts"],
+        )
+        recommendation = RECOMMENDATION_BY_LEVEL[risk_level]
 
         cursor.execute(
             """
@@ -1757,7 +1829,8 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
         numeric_columns = set(RAW_NUMERIC_COLUMNS)
         for key, value in raw_row.items():
             value_type = "number" if key in numeric_columns else "string"
-            stored = None if key in missing else str(value)
+            readable = inference.display_value(key, value)
+            stored = None if readable is None else str(readable)
             cursor.execute(
                 """
                 INSERT INTO assessment_feature_values (assessment_id, feature_name, feature_value, value_type)
@@ -1780,6 +1853,11 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
         "missingInputs": missing,
         "modelVersion": explanation["modelVersion"],
         "contributions": explanation["contributions"],
+        "modelRiskLevel": model_risk_level,
+        "baseRiskLevel": base_risk_level,
+        "riskSource": risk_source,
+        "prevent": prevent_result,
+        "clinicalAlerts": guideline["alerts"],
         **({"explanationError": True} if explanation.get("explanationError") else {}),
     }
 

@@ -10,9 +10,8 @@ import math
 from typing import Any, Dict, List
 
 from ml import inference
-from ml.features import RAW_COLUMNS, RAW_NUMERIC_COLUMNS
+from ml.nhanes import RAW_COLUMNS
 
-_NUMERIC = set(RAW_NUMERIC_COLUMNS)
 _TOLERANCE = 1e-9
 
 
@@ -21,13 +20,12 @@ def _missing(value: Any) -> bool:
 
 
 def _differs(column: str, value: Any, reference: Any) -> bool:
-    if column in _NUMERIC:
-        return abs(float(value) - float(reference)) > _TOLERANCE
-    return str(value) != str(reference)
+    # Every raw column is numeric (coded answers use NHANES numeric codes).
+    return abs(float(value) - float(reference)) > _TOLERANCE
 
 
 def _plain(column: str, value: Any) -> Any:
-    return float(value) if column in _NUMERIC else str(value)
+    return inference.display_value(column, value)
 
 
 def explain(raw_row: Dict[str, Any], top_k: int = 5) -> List[Dict[str, Any]]:

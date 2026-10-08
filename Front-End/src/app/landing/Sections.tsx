@@ -46,10 +46,10 @@ export function HowItWorks() {
 }
 
 const METRICS = [
-  [MODEL_FACTS.accuracy, "Accuracy"],
   [MODEL_FACTS.rocAuc, "ROC AUC"],
-  [MODEL_FACTS.recall, "Recall"],
-  [MODEL_FACTS.precision, "Precision"],
+  [MODEL_FACTS.sensitivity, "Sensitivity"],
+  [MODEL_FACTS.specificity, "Specificity"],
+  [MODEL_FACTS.balancedAccuracy, "Balanced accuracy"],
 ] as const;
 
 export function ModelSection() {
@@ -66,7 +66,7 @@ export function ModelSection() {
           <div className="absolute bottom-5 left-5 right-5 flex w-fit max-w-full items-center gap-3 rounded-2xl border border-white bg-white/75 px-[18px] py-4 backdrop-blur-[14px]">
             <span className="h-2.5 w-2.5 flex-none rounded-full bg-[#1fbf75] shadow-[0_0_0_4px_rgba(31,191,117,.2)]" />
             <span className="text-[13px] font-semibold text-[#0b1530]">
-              {MODEL_FACTS.version} · evaluated on a 134-patient test set
+              {MODEL_FACTS.version} · evaluated on 1,066 held-out patients
             </span>
           </div>
         </div>
@@ -77,8 +77,8 @@ export function ModelSection() {
               Tuned to catch risk, not to hide it.
             </h2>
             <p className="mt-3.5 max-w-[46ch] text-[15.5px] leading-[1.6] text-[#b9c5dc]">
-              A stacked ensemble (XGBoost, LightGBM, random forest and logistic regression) trained on{" "}
-              {MODEL_FACTS.inputsWord} routine clinical inputs. Scores are decision support — not calibrated to population prevalence.
+              The AHA PREVENT equations estimate each patient&apos;s 10-year cardiovascular risk, alongside a model trained on{" "}
+              {MODEL_FACTS.patients} NHANES 2021–2023 adults and guideline alerts for dangerous readings. Decision support, not a diagnosis.
             </p>
           </div>
           <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-3">
@@ -108,7 +108,7 @@ export function ModelSection() {
                 </li>
               ))}
             </ul>
-            <p className="mb-0 mt-3 text-[12px] text-[#b9c5dc]">Average importance across the XGBoost, LightGBM and random forest models</p>
+            <p className="mb-0 mt-3 text-[12px] text-[#b9c5dc]">Relative weight of each input in the NHANES model</p>
           </div>
         </div>
       </div>

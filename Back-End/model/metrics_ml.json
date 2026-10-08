@@ -1,109 +1,38 @@
 {
-  "accuracy": 0.835820895522388,
-  "precision": 0.8082191780821918,
-  "recall": 0.8805970149253731,
-  "f1": 0.8428571428571429,
-  "auc": 0.8857206504789485,
-  "pr_auc": 0.8811419320535727,
-  "threshold": 0.5075000000000001,
-  "default_threshold_accuracy": 0.8208955223880597,
-  "avg_ensemble_accuracy": 0.8208955223880597,
-  "target": 0.85,
+  "model_name": "CVD NHANES Logistic",
+  "model_version": "4.0.0",
+  "algorithm": "Logistic regression (C=0.01)",
+  "trained_at": "2026-10-07T15:58:31.813824+00:00",
+  "data": "NHANES 2021-2023, adults 18+ with measured BP and cholesterol",
+  "label": "Doctor-diagnosed CHF, CHD, angina, heart attack or stroke (MCQ160B-F)",
+  "n_train": 4264,
+  "n_test": 1066,
+  "prevalence": 0.124765478424015,
+  "decision_threshold": 0.4729225569703006,
+  "auc": 0.8636140189702552,
+  "auc_ci95": [
+    0.8322317046635883,
+    0.8923927584233896
+  ],
+  "cv_auc": 0.873,
+  "sensitivity": 0.8421052631578947,
+  "recall": 0.8421052631578947,
+  "specificity": 0.7331189710610932,
+  "balanced_accuracy": 0.787612117109494,
+  "precision": 0.31024930747922436,
+  "accuracy": 0.7467166979362101,
+  "f1": 0.4534412955465587,
+  "pr_auc": 0.4793594877313697,
+  "brier": 0.1599032418074694,
   "confusion_matrix": [
     [
-      53,
-      14
+      684,
+      249
     ],
     [
-      8,
-      59
+      21,
+      112
     ]
   ],
-  "model_name": "CVD Stacked Ensemble",
-  "model_version": "3.0.0",
-  "n_train": 536,
-  "n_test": 134,
-  "train_prevalence": 0.5,
-  "test_prevalence": 0.5,
-  "decision_threshold": 0.5075000000000001,
-  "specificity": 0.7910447761194029,
-  "accuracy_at_0_5": 0.8208955223880597,
-  "auc_ci95": [
-    0.8271274225885498,
-    0.935854310536868
-  ],
-  "brier": 0.15527281314074598,
-  "calibration": [
-    {
-      "bin_low": 0.0,
-      "bin_high": 0.1,
-      "count": 48,
-      "mean_predicted": 0.022770960835053127,
-      "observed_rate": 0.08333333333333333
-    },
-    {
-      "bin_low": 0.1,
-      "bin_high": 0.2,
-      "count": 3,
-      "mean_predicted": 0.15420239554013201,
-      "observed_rate": 0.6666666666666666
-    },
-    {
-      "bin_low": 0.2,
-      "bin_high": 0.30000000000000004,
-      "count": 3,
-      "mean_predicted": 0.23972961694750414,
-      "observed_rate": 0.3333333333333333
-    },
-    {
-      "bin_low": 0.30000000000000004,
-      "bin_high": 0.4,
-      "count": 3,
-      "mean_predicted": 0.34107122203295587,
-      "observed_rate": 0.3333333333333333
-    },
-    {
-      "bin_low": 0.4,
-      "bin_high": 0.5,
-      "count": 2,
-      "mean_predicted": 0.48752755380237517,
-      "observed_rate": 0.0
-    },
-    {
-      "bin_low": 0.5,
-      "bin_high": 0.6000000000000001,
-      "count": 5,
-      "mean_predicted": 0.5290521434037536,
-      "observed_rate": 0.6
-    },
-    {
-      "bin_low": 0.6000000000000001,
-      "bin_high": 0.7000000000000001,
-      "count": 3,
-      "mean_predicted": 0.6541565650794817,
-      "observed_rate": 0.6666666666666666
-    },
-    {
-      "bin_low": 0.7000000000000001,
-      "bin_high": 0.8,
-      "count": 2,
-      "mean_predicted": 0.7286365675381182,
-      "observed_rate": 0.5
-    },
-    {
-      "bin_low": 0.8,
-      "bin_high": 0.9,
-      "count": 5,
-      "mean_predicted": 0.8107858669804596,
-      "observed_rate": 0.8
-    },
-    {
-      "bin_low": 0.9,
-      "bin_high": 1.0,
-      "count": 60,
-      "mean_predicted": 0.9766871556738893,
-      "observed_rate": 0.8166666666666667
-    }
-  ],
-  "note": "Decision threshold was tuned on the test set (notebook), so test accuracy is optimistic. Dataset is class-balanced (~50% prevalence); probabilities are not calibrated to clinical population prevalence."
+  "note": "Cross-sectional label (existing diagnosed CVD). Class-weighted training: scores are not calibrated probabilities. Accuracy is at 12.5% prevalence; see balanced_accuracy."
 }

@@ -147,7 +147,7 @@ export function Hero() {
 
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-[20px] border border-white bg-white/80 px-6 py-5 shadow-[0_14px_40px_-18px_rgba(31,60,120,.3)] backdrop-blur-[12px]">
           {[
-            [ShieldIcon, MODEL_FACTS.accuracy, "Accuracy"],
+            [ShieldIcon, MODEL_FACTS.sensitivity, "Sensitivity"],
             [Activity, MODEL_FACTS.rocAuc, "ROC AUC"],
             [ClipboardList, MODEL_FACTS.inputs, "Clinical inputs"],
           ].map(([Icon, value, label]) => {

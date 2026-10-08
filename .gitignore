@@ -117,3 +117,6 @@ env/
 /Dashboard/
 /Landing page design built/
 *.zip
+
+# NHANES download cache (rebuilt by Back-End/model/cvd_nhanes_v2.ipynb)
+Back-End/model/nhanes_cache/

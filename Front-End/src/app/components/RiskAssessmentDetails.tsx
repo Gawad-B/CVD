@@ -7,7 +7,18 @@ import type { RiskAssessment } from "../api/types";
 import { PATIENTS_ROLES, hasRoleAccess, type Role } from "../auth/permissions";
 import { useAuth } from "../context/AuthContext";
 import { Badge, Button, Card, CardTitle, ConfirmModal, buttonClasses, riskVariant } from "../ui";
-import { ACTIVITY_UNIT_OPTIONS, EDUCATION_OPTIONS, FEATURE_LABELS, RACE_OPTIONS, SCORE_DISCLAIMER } from "./clinicalConstants";
+import { ClinicalAlerts } from "./ClinicalAlerts";
+import { PreventRisk } from "./PreventRisk";
+import {
+  ACTIVITY_UNIT_OPTIONS,
+  ALL_FEATURE_LABELS,
+  EDUCATION_OPTIONS,
+  FEATURE_LABELS,
+  GENERAL_HEALTH_OPTIONS,
+  LEGACY_FEATURE_LABELS,
+  RACE_OPTIONS,
+  SCORE_DISCLAIMER,
+} from "./clinicalConstants";
 import { OverrideModal } from "./dashboard/OverrideModal";
 import { ErrorCard, FactorsCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, isOverridden, patientMeta, recommendationMismatch, sexLabel } from "./dashboard/logic";
@@ -39,6 +50,9 @@ const CODED: Record<string, (raw: string) => string | undefined> = {
   BPQ020: (r) => YES_NO[r],
   BPQ080: (r) => YES_NO[r],
   BPQ101D: (r) => YES_NO[r],
+  BPQ150: (r) => YES_NO[r],
+  SMQ040: (r) => ({ "1": "Yes", "2": "Yes", "3": "No" })[r],
+  HUQ010: optionLabel(GENERAL_HEALTH_OPTIONS),
   RXQ033: (r) => YES_NO[r],
   RIAGENDR: (r) => sexLabel(r) ?? undefined,
   RIDRETH3: optionLabel(RACE_OPTIONS),
@@ -65,6 +79,12 @@ export function inputText(column: string, raw: number | string | null | undefine
     return text;
   }
   return formatFactorValue(raw);
+}
+
+/** Current inputs always; retired inputs only when this (older) assessment recorded them. */
+function inputRows(inputs: RiskAssessment["inputs"]): Array<[string, string]> {
+  const legacy = Object.entries(LEGACY_FEATURE_LABELS).filter(([column]) => inputText(column, inputs?.[column]) !== null);
+  return [...Object.entries(FEATURE_LABELS), ...legacy];
 }
 
 const riskText = (level: string) => `${level} risk`;
@@ -136,7 +156,9 @@ export function RiskAssessmentDetails() {
   const reviewed = assessment.reviewStatus === "reviewed";
   const meta = patientMeta(assessment);
   const explanation = assessment.explanation;
-  const missingLabels = (explanation?.missingInputs ?? []).map((c) => FEATURE_LABELS[c] ?? c);
+  const missingLabels = (explanation?.missingInputs ?? []).map((c) => ALL_FEATURE_LABELS[c] ?? c);
+  const alerts = explanation?.clinicalAlerts ?? [];
+  const modelRiskLevel = explanation?.modelRiskLevel ?? assessment.riskLevel;
   const modelVersion = (explanation?.modelVersion ?? assessment.modelVersion)?.replace(/^v/i, "");
   const history = [...(assessment.overrideHistory ?? [])].sort((x, y) => y.createdAt.localeCompare(x.createdAt));
   const heartRate = assessment.heartRate ?? null;
@@ -220,15 +242,15 @@ export function RiskAssessmentDetails() {
               {[assessment.externalPatientCode, meta].filter(Boolean).join(" · ")}
             </span>
           </Fact>
-          <Fact label="Model score">
+          <Fact label="ML model score">
             <span className="tabular-nums">{`${(assessment.probabilityCvd * 100).toFixed(1)}%`}</span>
             <span className="block text-[12.5px] font-normal text-[#5b6b85]">
               {`${assessment.modelName}${modelVersion ? ` v${modelVersion}` : ""}`}
             </span>
           </Fact>
-          <Fact label="Model risk">
-            <Badge variant={riskVariant(assessment.riskLevel)} className="capitalize">
-              {riskText(assessment.riskLevel)}
+          <Fact label="ML model risk">
+            <Badge variant={riskVariant(modelRiskLevel)} className="capitalize">
+              {riskText(modelRiskLevel)}
             </Badge>
           </Fact>
           <Fact label={overridden ? "Effective risk (overridden)" : "Effective risk"}>
@@ -238,6 +260,23 @@ export function RiskAssessmentDetails() {
           </Fact>
         </dl>
       </Card>
+
+      {explanation?.prevent && (
+        <Section title="10-year cardiovascular risk">
+          <PreventRisk prevent={explanation.prevent} />
+        </Section>
+      )}
+
+      {alerts.length > 0 && (
+        <Section title="Clinical alerts">
+          <ClinicalAlerts
+            alerts={alerts}
+            baseRiskLevel={explanation?.baseRiskLevel ?? explanation?.modelRiskLevel}
+            riskSource={explanation?.riskSource}
+            riskLevel={assessment.riskLevel}
+          />
+        </Section>
+      )}
 
       <Section title="Recommendation">
         {recommendationMismatch(assessment) && (
@@ -302,7 +341,7 @@ export function RiskAssessmentDetails() {
 
       <Section title="Inputs">
         <dl className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
-          {Object.entries(FEATURE_LABELS).map(([column, label]) => {
+          {inputRows(assessment.inputs).map(([column, label]) => {
             const text = inputText(column, assessment.inputs?.[column]);
             return (
               <div key={column} className="flex items-baseline justify-between gap-3 border-b border-[#e6ebf4] py-2 text-[13.5px]">

@@ -98,7 +98,11 @@ describe("RiskAssessmentDetails", () => {
     await screen.findByRole("heading", { name: "Marisol Quill" });
     const sys = screen.getByText("Systolic BP (mmHg)").closest("div")!;
     expect(sys).toHaveTextContent("168");
-    expect(screen.getByText("Smoker").closest("div")).toHaveTextContent("Yes");
+    expect(screen.getByText("Ever smoked").closest("div")).toHaveTextContent("Yes");
+    for (const label of ["Creatinine (mg/dL)", "Smokes now", "On BP medication", "Self-rated general health", "Urine albumin/creatinine (mg/g)"]) {
+      expect(screen.getByText(label).closest("div")).toHaveTextContent("Not recorded");
+    }
+    expect(screen.queryByText("Vigorous activity sessions per unit")).not.toBeInTheDocument(); // retired, not recorded
     expect(screen.getByText("HbA1c (%)").closest("div")).toHaveTextContent("Not recorded");
     expect(screen.getByText("Sleep hours (weekday)").closest("div")).toHaveTextContent("Not recorded");
     expect(screen.getByText("Heart rate (not used by the model)").closest("div")).toHaveTextContent("72 bpm");

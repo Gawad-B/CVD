@@ -1,4 +1,6 @@
 import type {
+  ClinicalAlert,
+  PreventResult,
   AuditLogEntry,
   AuditOutcome,
   DemoAccount,
@@ -147,7 +149,43 @@ function mapExplanation(raw: any): RiskAssessment["explanation"] {
       .map((item: any) => ({ ...item, delta: Number(item?.delta) }))
       .filter((item: any) => Number.isFinite(item.delta)),
     explanationError: raw.explanationError === true,
+    modelRiskLevel: raw.modelRiskLevel != null ? asRiskLevel(raw.modelRiskLevel) : undefined,
+    baseRiskLevel: raw.baseRiskLevel != null ? asRiskLevel(raw.baseRiskLevel) : undefined,
+    riskSource: raw.riskSource === "prevent" || raw.riskSource === "model" ? raw.riskSource : undefined,
+    prevent: mapPrevent(raw.prevent),
+    clinicalAlerts: mapAlerts(raw.clinicalAlerts),
   };
+}
+
+const PREVENT_CATEGORIES = new Set(["low", "borderline", "intermediate", "high"]);
+const PREVENT_MODELS = new Set(["base", "uacr", "hba1c", "full"]);
+
+export function mapPrevent(raw: any): PreventResult | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  if (raw.available !== true) return { available: false, reason: raw.reason ? String(raw.reason) : undefined };
+  const risk = Number(raw.risk);
+  if (!Number.isFinite(risk)) return { available: false };
+  return {
+    available: true,
+    risk,
+    category: PREVENT_CATEGORIES.has(raw.category) ? raw.category : undefined,
+    model: PREVENT_MODELS.has(raw.model) ? raw.model : undefined,
+    egfr: Number.isFinite(Number(raw.egfr)) ? Number(raw.egfr) : undefined,
+  };
+}
+
+const ALERT_SEVERITIES = new Set(["critical", "warning", "info"]);
+
+export function mapAlerts(raw: unknown): ClinicalAlert[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((a: any) => a && typeof a.title === "string")
+    .map((a: any) => ({
+      code: String(a.code ?? ""),
+      severity: ALERT_SEVERITIES.has(a.severity) ? a.severity : "info",
+      title: a.title,
+      detail: String(a.detail ?? ""),
+    }));
 }
 
 function nullableString(value: unknown): string | null {
@@ -410,10 +448,11 @@ export async function submitRiskAssessment(input: RiskAssessmentRequest): Promis
     ...input.payload,
   });
 
-  return fetchJson<RiskAssessmentResponse>("/api/risk-assessments", {
+  const response = await fetchJson<RiskAssessmentResponse>("/api/risk-assessments", {
     method: "POST",
     body,
   });
+  return { ...response, clinicalAlerts: mapAlerts(response.clinicalAlerts), prevent: mapPrevent(response.prevent) };
 }
 
 export async function getAuditLogEntries(

@@ -12,13 +12,16 @@ import {
   MORE_FIELDS,
   REQUIRED_FIELDS,
   buildAssessmentPayload,
+  isShown,
   initialValues,
   validateAssessment,
   type AssessmentField,
   type FormErrors,
   type FormValues,
 } from "../assessmentFields";
-import { FEATURE_LABELS, INPUT_RANGES, SCORE_DISCLAIMER } from "../clinicalConstants";
+import { ClinicalAlerts } from "../ClinicalAlerts";
+import { PreventRisk } from "../PreventRisk";
+import { ALL_FEATURE_LABELS, INPUT_RANGES, SCORE_DISCLAIMER } from "../clinicalConstants";
 import { ageFromDob } from "../dateOfBirth";
 
 interface Props {
@@ -34,7 +37,7 @@ const optionName = (p: Patient) => `${`${p.firstName} ${p.lastName}`.trim()}${p.
 
 function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale: boolean }) {
   const level = normalizeRisk(result.riskLevel);
-  const missing = (result.missingInputs ?? []).map((column) => FEATURE_LABELS[column] ?? column);
+  const missing = (result.missingInputs ?? []).map((column) => ALL_FEATURE_LABELS[column] ?? column);
   const target = result.assessmentId ? `/dashboard?assessment=${result.assessmentId}` : "/dashboard";
   return (
     <section
@@ -45,7 +48,7 @@ function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale:
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[12px] font-semibold text-[#5b6b85]">
-            {stale ? "Previous result (inputs changed since this run)" : "Model score"}
+            {stale ? "Previous result (inputs changed since this run)" : "ML model score"}
           </p>
           <p className="text-[30px] font-bold leading-tight tracking-[-0.02em] tabular-nums text-[#0b1530]">
             {Math.round(result.probability * 100)}%
@@ -55,6 +58,14 @@ function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale:
           {level} risk
         </Badge>
       </div>
+      <PreventRisk prevent={result.prevent} className="mt-3" />
+      <ClinicalAlerts
+        alerts={result.clinicalAlerts ?? []}
+        baseRiskLevel={result.baseRiskLevel ?? result.modelRiskLevel}
+        riskSource={result.riskSource}
+        riskLevel={level}
+        className="mt-3"
+      />
       <p className="mt-3 text-[14px] leading-relaxed text-[#33405a]">{result.recommendation}</p>
       {missing.length > 0 && (
         <p role="note" className="mt-3 rounded-[12px] bg-[#fef3c7] px-3.5 py-2.5 text-[13px] text-[#b45309]">
@@ -230,7 +241,7 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
           <Field label="Age" hint={patient ? "From date of birth" : undefined} error={errors.age}>
             {(a) => <Input {...a} readOnly value={age ?? ""} placeholder="—" className="!bg-[#f3f6fc]" />}
           </Field>
-          {REQUIRED_FIELDS.map((f) => renderField(f, values, errors, set, "Select…"))}
+          {REQUIRED_FIELDS.filter((f) => isShown(f, values)).map((f) => renderField(f, values, errors, set, "Select…"))}
           <Field label="Heart rate (bpm)" hint="Optional · not used by the model" error={errors.heartRate} className="min-[480px]:col-span-2">
             {(a) => (
               <Input
@@ -262,7 +273,7 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
             {moreOpen && (
               <div className="flex flex-col gap-3.5 rounded-[14px] bg-[#f3f6fc] p-3.5">
                 <p className="text-[12.5px] text-[#5b6b85]">
-                  All optional — these inputs have little influence on the model. Anything left as “Not recorded” is estimated from the training data (median or most common answer).
+                  All optional. Urine albumin/creatinine also refines the PREVENT risk. Anything left blank is estimated from the training data (median or most common answer).
                 </p>
                 <div className={GRID}>{MORE_FIELDS.map((f) => renderField(f, values, errors, set))}</div>
                 <Field label="Clinical notes">

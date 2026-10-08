@@ -149,11 +149,38 @@ export interface FactorContribution {
   delta: number;
 }
 
+/** Guideline rule hit on the raw readings, independent of the model score. */
+export interface ClinicalAlert {
+  code: string;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  detail: string;
+}
+
+/** AHA PREVENT 10-year total CVD risk, or why it could not be calculated. */
+export interface PreventResult {
+  available: boolean;
+  /** 0-1 when available. */
+  risk?: number;
+  category?: "low" | "borderline" | "intermediate" | "high";
+  /** Which PREVENT equation was used: base, + UACR, + HbA1c, or both. */
+  model?: "base" | "uacr" | "hba1c" | "full";
+  egfr?: number;
+  reason?: string;
+}
+
 export interface AssessmentExplanation {
   missingInputs: string[];
   modelVersion?: string;
   contributions: FactorContribution[];
   explanationError?: boolean;
+  /** Level from the ML score alone. */
+  modelRiskLevel?: RiskLevel;
+  /** Level before clinical alerts: from PREVENT when available, otherwise the ML level. */
+  baseRiskLevel?: RiskLevel;
+  riskSource?: "prevent" | "model";
+  prevent?: PreventResult;
+  clinicalAlerts: ClinicalAlert[];
 }
 
 export type AuditOutcome = "success" | "failure" | "denied";
@@ -203,38 +230,41 @@ export interface UpdateUserInput {
 export interface RiskAssessmentRequest {
   patientId: number;
   payload: {
-    // Required: the model's top-20 feature-importance inputs plus diastolic BP and smoker.
+    // Required: the AHA PREVENT inputs plus the strongest inputs of the NHANES model.
     age?: number;
     bmi: number;
-    waistCm: number;
     systolicBp: number;
     diastolicBp: number;
     highBp: "yes" | "no";
     bpMed: "yes" | "no";
     totalCholesterol: number;
     hdl: number;
+    highChol: "yes" | "no";
+    cholMed: "yes" | "no";
+    creatinine: number;
     hba1cPercent: number;
-    hsCrp: number;
-    wbc: number;
-    hemoglobin: number;
-    platelets: number;
-    rdw: number;
-    incomeRatio: number;
+    diabetic: "yes" | "no" | "borderline";
     smoker: "yes" | "no";
+    smokesNow: "yes" | "no";
+    generalHealth: number;
     // Optional: imputed by the model when omitted.
-    diabetic?: "yes" | "no" | "borderline";
-    highChol?: "yes" | "no";
-    cholMed?: "yes" | "no";
+    waistCm?: number;
+    urineAcr?: number;
+    triglycerides?: number;
+    glucose?: number;
+    uricAcid?: number;
+    hsCrp?: number;
     sodium?: number;
-    race?: number;
-    education?: number;
-    vigorousActivityMinutes?: number;
-    moderateActivityMinutes?: number;
-    moderateActivityUnit?: number;
-    sedentaryMinutes?: number;
-    sedentaryMinutesAlt?: number;
+    wbc?: number;
+    hemoglobin?: number;
+    platelets?: number;
+    rdw?: number;
     sleepHoursWeekday?: number;
     sleepHoursWeekend?: number;
+    sedentaryMinutesAlt?: number;
+    incomeRatio?: number;
+    race?: number;
+    education?: number;
     notes?: string;
     /** Optional measured heart rate, 30-220 bpm. Stored with the assessment, not a model input. */
     heartRate?: number;
@@ -252,6 +282,11 @@ export interface RiskAssessmentResponse {
   modelVersion?: string;
   contributions?: FactorContribution[];
   explanationError?: boolean;
+  modelRiskLevel?: "low" | "medium" | "high";
+  baseRiskLevel?: "low" | "medium" | "high";
+  riskSource?: "prevent" | "model";
+  prevent?: PreventResult;
+  clinicalAlerts?: ClinicalAlert[];
 }
 
 export interface DashboardStats {

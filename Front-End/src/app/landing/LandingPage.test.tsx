@@ -87,7 +87,7 @@ describe("LandingPage", () => {
     renderLanding();
     const hits = screen.queryAllByText(/calibrated/i);
     hits.forEach((node) => expect(node.textContent).toMatch(/not calibrated/i));
-    expect(screen.getByText(/evaluated on a 134-patient test set/i)).toBeInTheDocument();
+    expect(screen.getByText(/evaluated on 1,066 held-out patients/i)).toBeInTheDocument();
   });
 
   it("renders the real feature importance bars from the generated JSON", () => {
@@ -96,6 +96,6 @@ describe("LandingPage", () => {
     for (const item of featureImportance) {
       expect(screen.getByLabelText(`${item.label}: ${item.value}% of the strongest input`)).toBeInTheDocument();
     }
-    expect(screen.getByText("Average importance across the XGBoost, LightGBM and random forest models")).toBeInTheDocument();
+    expect(screen.getByText("Relative weight of each input in the NHANES model")).toBeInTheDocument();
   });
 });

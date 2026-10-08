@@ -3,7 +3,7 @@ import math
 import pytest
 
 from ml import explain, inference
-from ml.features import RAW_COLUMNS
+from ml.nhanes import RAW_COLUMNS
 
 HIGH_RISK = {"age": 75, "sbp": 180, "smoker": "yes", "diabetic": "yes"}
 

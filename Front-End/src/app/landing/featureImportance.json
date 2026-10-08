@@ -1,22 +1,22 @@
 [
   {
-    "label": "On BP medication",
+    "label": "Age",
     "value": 100
   },
   {
-    "label": "HbA1c × age",
-    "value": 45
+    "label": "Self-rated health (poorer)",
+    "value": 84
   },
   {
-    "label": "Age",
+    "label": "On cholesterol medication",
+    "value": 49
+  },
+  {
+    "label": "Ever smoked",
     "value": 42
   },
   {
-    "label": "Total cholesterol",
-    "value": 34
-  },
-  {
-    "label": "High blood pressure",
-    "value": 34
+    "label": "High blood pressure (history)",
+    "value": 40
   }
 ]

@@ -79,7 +79,7 @@ def test_omitted_categoricals_are_reported_missing(client, setup):
     response = _post(client, headers, pid, sbp=140, dbp=85)
     assert response.status_code == 200, response.text
     missing = response.json()["missingInputs"]
-    for name in ("RIDRETH3", "DMDEDUC2", "PAD790U"):
+    for name in ("RIDRETH3", "DMDEDUC2", "HUQ010"):
         assert name in missing
 
 
