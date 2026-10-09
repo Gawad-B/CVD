@@ -161,6 +161,7 @@ export function AuditLog() {
         title="Audit log"
         subtitle="Every view, change and sign-in, newest first"
         action={<PillTabs tabs={FILTERS} value={filter} onChange={setFilter} label="Filter by outcome" />}
+        help="A permanent record of who viewed or changed what, and when. Use the tabs to show only failures or denied actions (for example a wrong password or a page someone was not allowed to open)."
       />
       {body}
     </div>

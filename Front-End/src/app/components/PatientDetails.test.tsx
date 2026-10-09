@@ -94,7 +94,7 @@ describe("PatientDetails", () => {
     expect(await screen.findByText("high risk")).toHaveAttribute("data-variant", "high");
     expect(screen.getByText("Overridden")).toBeInTheDocument();
     expect(screen.getByText("model: medium")).toBeInTheDocument();
-    expect(screen.getByText("Based on Clinician override")).toBeInTheDocument();
+    expect(screen.getByText("Set by clinician")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New assessment" })).toHaveAttribute("href", "/assessments?patient=10");
     expect(screen.getByRole("link", { name: "View on dashboard" })).toHaveAttribute("href", "/dashboard?assessment=41");
     expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute("href", "/assessments/41");

@@ -10,6 +10,7 @@ import type {
   RiskAssessmentFilters,
   RiskLevel,
   LevelSource,
+  ScoreType,
   CreateEncounterInput,
   CreateUserInput,
   DashboardStats,
@@ -91,12 +92,14 @@ export function asRiskLevel(value: unknown, fallback: RiskLevel = "unknown"): Ri
   return "unknown";
 }
 
-function mapLevelSource(raw: any): { levelSource?: LevelSource; preventRisk?: number } {
+function mapLevelSource(raw: any): { levelSource?: LevelSource; preventRisk?: number; scoreType?: ScoreType } {
   const source = raw.levelSource ?? raw.level_source;
+  const scoreType = raw.scoreType ?? raw.score_type;
   const prevent = Number(raw.preventRisk ?? raw.prevent_risk);
   return {
     ...(source === "alerts" || source === "prevent" || source === "model" ? { levelSource: source } : {}),
     ...(raw.preventRisk != null || raw.prevent_risk != null ? (Number.isFinite(prevent) ? { preventRisk: prevent } : {}) : {}),
+    ...(scoreType === "death_10y" || scoreType === "level" ? { scoreType } : {}),
   };
 }
 

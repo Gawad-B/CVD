@@ -7,7 +7,7 @@ import { getDashboardStats, getRiskAssessments } from "../api/client";
 import type { RiskAssessment } from "../api/types";
 import { Avatar, Badge, cn, riskVariant } from "../ui";
 import { shellTabsForRole } from "./shellTabs";
-import { formatScore } from "./formatScore";
+import { riskSummary } from "./RiskResult";
 
 const POLL_MS = 60_000;
 
@@ -174,7 +174,7 @@ function BellMenu() {
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-semibold text-[#0b1530]">{item.patientName}</span>
                       <span className="block text-xs text-[#5b6b85]">
-                        {formatDate(item.createdAt)} · {formatScore(item.probabilityCvd)}
+                        {formatDate(item.createdAt)} · {riskSummary(item)}
                       </span>
                     </span>
                     <Badge variant={riskVariant(item.effectiveRiskLevel)} />

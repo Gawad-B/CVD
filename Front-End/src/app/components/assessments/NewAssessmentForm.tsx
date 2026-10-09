@@ -5,7 +5,7 @@ import { submitRiskAssessment } from "../../api/client";
 import type { Patient, RiskAssessmentResponse } from "../../api/types";
 import { normalizeRisk } from "../../heart";
 import { RISK_TONE } from "../../heart/riskTone";
-import { Badge, Button, Card, CardTitle, ConfirmModal, Field, Input, Select, buttonClasses, cn, riskVariant } from "../../ui";
+import { Button, Card, CardTitle, ConfirmModal, Field, Input, Select, buttonClasses, cn } from "../../ui";
 import {
   HEART_RATE_MAX,
   HEART_RATE_MIN,
@@ -23,7 +23,7 @@ import { ClinicalAlerts } from "../ClinicalAlerts";
 import { PreventRisk } from "../PreventRisk";
 import { ALL_FEATURE_LABELS, INPUT_RANGES, scoreCaveat } from "../clinicalConstants";
 import { ageFromDob } from "../dateOfBirth";
-import { formatScore } from "../formatScore";
+import { RiskResult } from "../RiskResult";
 
 interface Props {
   patients: Patient[];
@@ -46,22 +46,9 @@ function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale:
       className={cn("mt-5 rounded-[16px] border-l-4 bg-[#f3f6fc] p-4", stale && "opacity-70")}
       style={{ borderLeftColor: RISK_TONE[level].color }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[12px] font-semibold text-[#5b6b85]">
-            {stale ? "Previous result (inputs changed since this run)" : "ML model score"}
-          </p>
-          <p className="text-[30px] font-bold leading-tight tracking-[-0.02em] tabular-nums text-[#0b1530]">
-            {formatScore(result.probability)}
-          </p>
-          {result.scoreMeaning && (
-            <p className="text-[12px] text-[#5b6b85]">{`${result.modelName ? `${result.modelName}: ` : ""}${result.scoreMeaning}`}</p>
-          )}
-        </div>
-        <Badge variant={riskVariant(level)} className="capitalize">
-          {level} risk
-        </Badge>
-      </div>
+      {stale && <p className="mb-2 text-[12px] font-semibold text-[#5b6b85]">Previous result (inputs changed since this run)</p>}
+      <RiskResult level={level} scoreType={result.scoreType} probability={result.probability} />
+      {result.modelName && <p className="mt-2 text-[12px] text-[#5b6b85]">{`Scored by ${result.modelName}`}</p>}
       <PreventRisk prevent={result.prevent} alerts={result.clinicalAlerts ?? []} className="mt-3" />
       <ClinicalAlerts
         alerts={result.clinicalAlerts ?? []}
@@ -92,7 +79,7 @@ function renderField(
   emptyLabel = "Not recorded",
 ) {
   return (
-    <Field key={field.name} label={field.label} error={errors[field.name]}>
+    <Field key={field.name} label={field.label} hint={field.hint} error={errors[field.name]}>
       {(a) =>
         field.kind === "number" ? (
           <Input
@@ -224,7 +211,7 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
     <Card>
       <CardTitle>New assessment</CardTitle>
       <form ref={formRef} onSubmit={submit} noValidate aria-busy={running} className="mt-4 flex flex-col gap-3.5">
-        <Field label="Patient" error={errors.patient}>
+        <Field label="Patient" hint="Not listed? Add them on the Patients page first." error={errors.patient}>
           {(a) => (
             <Select
               {...a}
@@ -246,7 +233,7 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
             {(a) => <Input {...a} readOnly value={age ?? ""} placeholder="—" className="!bg-[#f3f6fc]" />}
           </Field>
           {REQUIRED_FIELDS.filter((f) => isShown(f, values)).map((f) => renderField(f, values, errors, set, "Select…"))}
-          <Field label="Heart rate (bpm)" hint="Not used by the model" error={errors.heartRate} className="min-[480px]:col-span-2">
+          <Field label="Heart rate (bpm)" hint="Beats per minute at rest. Normal 60–100. Recorded for the doctor, not used by the model." error={errors.heartRate} className="min-[480px]:col-span-2">
             {(a) => (
               <Input
                 {...a}
@@ -277,7 +264,7 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
             {moreOpen && (
               <div className="flex flex-col gap-3.5 rounded-[14px] bg-[#f3f6fc] p-3.5">
                 <p className="text-[12.5px] text-[#5b6b85]">
-                  All optional. Anything left blank is estimated from the training data (median or most common answer).
+                  All optional, but each one you add makes the result more precise. Anything left blank is estimated from the training data (median or most common answer).
                 </p>
                 <div className={GRID}>{MORE_FIELDS.filter((f) => isShown(f, values)).map((f) => renderField(f, values, errors, set))}</div>
                 <Field label="Clinical notes">

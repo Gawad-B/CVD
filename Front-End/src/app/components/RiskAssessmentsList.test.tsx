@@ -119,7 +119,7 @@ describe("Assessments: past list", () => {
     const row = (await screen.findByText("Alder Fennimore")).closest("a")!;
     expect(row).toHaveAttribute("href", "/dashboard?assessment=2");
     expect(within(row).getByText("P-0011 · 1 Oct 2026 · Signed off")).toBeInTheDocument();
-    expect(within(row).getByText("Model 25%")).toBeInTheDocument();
+    expect(within(row).getByText("From screening model")).toBeInTheDocument();
     expect(within(row).getByText("high")).toHaveAttribute("data-variant", "high");
     expect(within(screen.getByText("Marisol Quill").closest("a")!).getByText(/Pending review/)).toBeInTheDocument();
   });
@@ -261,8 +261,9 @@ describe("Assessments: new assessment form", () => {
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
 
     const panel = await screen.findByRole("region", { name: "Assessment result" });
-    expect(within(panel).getByText("66%")).toBeInTheDocument();
-    expect(within(panel).getByText("high risk")).toHaveAttribute("data-variant", "high");
+    expect(within(panel).getByText("High risk")).toBeInTheDocument();
+    expect(within(panel).getByRole("img", { name: "Risk level: high" })).toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("66%"); // the screening model is read as a level, not a percentage
     expect(within(panel).getByText("Refer to cardiology.")).toBeInTheDocument();
     expect(within(panel).getByText(/estimated from population medians: HbA1c \(%\), hs-CRP \(mg\/L\)/)).toBeInTheDocument();
     expect(within(panel).getByRole("link", { name: "View heart on dashboard" })).toHaveAttribute("href", "/dashboard?assessment=88");
@@ -387,7 +388,22 @@ describe("Assessments: new assessment form", () => {
     await screen.findByLabelText("Patient");
     await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
-    expect(await screen.findByText("unknown risk")).toBeInTheDocument();
+    expect(await screen.findByText("Unknown risk")).toBeInTheDocument();
+  });
+
+  it("shows the 10-year death model as a percentage with plain wording", async () => {
+    const user = userEvent.setup();
+    api.submitRiskAssessment.mockResolvedValue({
+      probability: 0.031, riskLevel: "medium", scoreType: "death_10y", recommendation: "ok", assessmentId: 6,
+    });
+    renderPage("/assessments?patient=10");
+    await screen.findByLabelText("Patient");
+    await fillRequired(user);
+    await user.click(screen.getByRole("button", { name: "Run assessment" }));
+    const panel = await screen.findByRole("region", { name: "Assessment result" });
+    expect(within(panel).getByText("3%")).toBeInTheDocument();
+    expect(within(panel).getByText("About 3 in 100 people like this patient")).toBeInTheDocument();
+    expect(within(panel).getByText(/10-year risk of dying from heart disease or stroke/)).toBeInTheDocument();
   });
 
   it("shows a readable API validation message", async () => {

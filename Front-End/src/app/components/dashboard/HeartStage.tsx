@@ -5,6 +5,7 @@ import { RISK_LABEL, formatDate, isOverridden } from "./logic";
 import type { RiskAssessment } from "../../api/types";
 import { scoreCaveat } from "../clinicalConstants";
 import { formatScore } from "../formatScore";
+import { LevelMeter } from "../RiskResult";
 
 interface Props {
   assessment: RiskAssessment;
@@ -90,12 +91,16 @@ export function HeartStage({ assessment, code, meta }: Props) {
             <span aria-hidden className="h-[9px] w-[9px] rounded-full" style={{ background: tone.color }} />
             {RISK_LABEL[risk]}
           </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-[30px] font-bold tracking-[-0.02em] tabular-nums text-[#0b1530]">
-              {formatScore(assessment.probabilityCvd)}
-            </span>
-            <span className="text-[12px] text-[#5b6b85]">Model score</span>
-          </div>
+          {assessment.scoreType === "death_10y" ? (
+            <div className="mt-2">
+              <span className="text-[30px] font-bold tracking-[-0.02em] tabular-nums" style={{ color: tone.color }}>
+                {formatScore(assessment.probabilityCvd)}
+              </span>
+              <span className="block text-[12px] leading-snug text-[#5b6b85]">risk of dying from heart disease or stroke in 10 years</span>
+            </div>
+          ) : (
+            <LevelMeter level={risk} className="mt-2.5" />
+          )}
           <p className="mt-1.5 text-[12.5px] leading-[1.45] text-[#33405a]">{tone.state}</p>
           {overridden && (
             <p className="mt-2 border-t border-[#e6ebf4] pt-2 text-[12px] leading-[1.4] text-[#33405a]">

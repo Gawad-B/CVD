@@ -81,6 +81,7 @@ def test_models_that_are_not_installed_cannot_be_activated(client, admin, db):
         old_id = cursor.fetchone()["id"]
     db.commit()
     assert client.post(f"/api/models/{old_id}/activate", headers=admin).status_code == 409
+    assert "Old" not in _models(client, admin)  # retired models are not listed
     assert client.post("/api/models/999999/activate", headers=admin).status_code == 404
 
 
@@ -107,6 +108,7 @@ def test_prevent_lifts_a_low_mortality_score(client, admin, make_patient):
     assert body["riskSource"] == "prevent" and body["baseRiskLevel"] in ("medium", "high")
     listed = client.get("/api/patients", headers=admin).json()
     last = next(p for p in listed if p["patient_id"] == pid)["last_assessment"]
+    assert body["scoreType"] == "death_10y" and last["score_type"] == "death_10y"
     assert last["level_source"] == "prevent" and last["prevent_risk"] == pytest.approx(body["prevent"]["risk"])
 
 
@@ -116,6 +118,7 @@ def test_level_driver_names_what_set_the_level():
 
     prevent = {"available": True, "risk": 0.11}
     assert level_driver({"baseRiskLevel": "medium", "riskSource": "prevent", "prevent": prevent}, "high") == \
-        {"level_source": "alerts", "prevent_risk": 0.11}
+        {"level_source": "alerts", "prevent_risk": 0.11, "score_type": "level"}
     assert level_driver({"baseRiskLevel": "medium", "riskSource": "prevent", "prevent": prevent}, "medium")["level_source"] == "prevent"
-    assert level_driver(None, "low") == {"level_source": None, "prevent_risk": None}
+    assert level_driver(None, "low") == {"level_source": None, "prevent_risk": None, "score_type": "level"}
+    assert level_driver({"modelKey": "nhanes_mortality"}, "low")["score_type"] == "death_10y"

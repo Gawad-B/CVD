@@ -10,7 +10,7 @@ import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
 import { PageHeader } from "./PageHeader";
-import { levelReason } from "./formatScore";
+import { riskSummary } from "./RiskResult";
 
 type Filter = "all" | RiskLevel;
 
@@ -69,8 +69,7 @@ function PastAssessments({
                   </span>
                 </span>
                 <span className="text-[14px] font-semibold tabular-nums text-[#33405a]">
-                  <span className="sr-only">Level based on </span>
-                  {levelReason(a)}
+                  {riskSummary(a)}
                 </span>
                 <Badge variant={riskVariant(a.effectiveRiskLevel)} className="shrink-0 capitalize">
                   {a.effectiveRiskLevel}
@@ -138,6 +137,11 @@ export function RiskAssessmentsList() {
         title="Risk assessments"
         subtitle="Past results and new screenings"
         action={<PillTabs tabs={FILTER_TABS} value={filter} onChange={setFilter} label="Filter by risk level" />}
+        help={
+          canCreate
+            ? "To screen someone: pick the patient, fill in the required fields (hover the (i) icons or read the grey hints for normal ranges) and press Run assessment. Past results are on the left; use the tabs to filter by risk."
+            : "Past results, newest first. Use the tabs to filter by risk level and click a row for the full report."
+        }
       />
       {canCreate ? (
         <div className="grid grid-cols-[repeat(auto-fit,minmax(min(380px,100%),1fr))] items-start gap-[18px]">

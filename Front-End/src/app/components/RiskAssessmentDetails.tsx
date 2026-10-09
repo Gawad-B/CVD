@@ -24,7 +24,8 @@ import { ErrorCard, FactorsCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, isOverridden, patientMeta, recommendationMismatch, sexLabel } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
 import { formatFactorValue } from "./formatFactorValue";
-import { formatScore } from "./formatScore";
+import { RiskResult } from "./RiskResult";
+import { HelpHint, InfoTip } from "../ui/InfoTip";
 
 const textarea =
   "w-full rounded-[12px] border border-[#d6deec] bg-white px-3.5 py-3 text-[14px] leading-relaxed text-[#0b1530] placeholder:text-[#8fa1c4] focus:border-[#1f5eff]";
@@ -194,6 +195,12 @@ export function RiskAssessmentDetails() {
     <div className="flex flex-col gap-5">
       {back}
 
+      <HelpHint>
+        The big number or level below is the result. Scroll down for the AHA PREVENT estimate, any clinical alerts, the
+        recommendation, which readings pushed the risk up or down, and every input used. When you have checked it, press{" "}
+        <strong>Sign off</strong> at the bottom; use <strong>Override</strong> if you disagree with the level.
+      </HelpHint>
+
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -243,26 +250,27 @@ export function RiskAssessmentDetails() {
               {[assessment.externalPatientCode, meta].filter(Boolean).join(" · ")}
             </span>
           </Fact>
-          <Fact label="ML model score">
-            <span className="tabular-nums">{formatScore(assessment.probabilityCvd)}</span>
-            <span className="block text-[12.5px] font-normal text-[#5b6b85]">
-              {`${assessment.modelName}${modelVersion ? ` v${modelVersion}` : ""}`}
-            </span>
+          <Fact label="Scored by">
+            {`${assessment.modelName}${modelVersion ? ` v${modelVersion}` : ""}`}
             {explanation?.scoreMeaning && (
               <span className="block text-[12px] font-normal text-[#5b6b85]">{explanation.scoreMeaning}</span>
             )}
           </Fact>
-          <Fact label="ML model risk">
-            <Badge variant={riskVariant(modelRiskLevel)} className="capitalize">
-              {riskText(modelRiskLevel)}
-            </Badge>
-          </Fact>
-          <Fact label={overridden ? "Effective risk (overridden)" : "Effective risk"}>
-            <Badge variant={riskVariant(assessment.effectiveRiskLevel)} className="capitalize">
-              {riskText(assessment.effectiveRiskLevel)}
-            </Badge>
+          <Fact label="Model on its own">
+            <span className="flex items-center gap-1.5">
+              <Badge variant={riskVariant(modelRiskLevel)} className="capitalize">
+                {riskText(modelRiskLevel)}
+              </Badge>
+              <InfoTip text="The level from the ML model alone. The final level can be higher when the AHA PREVENT guideline or clinical alerts find more risk, or different when a clinician overrides it." />
+            </span>
           </Fact>
         </dl>
+        <div className="mt-4 rounded-[16px] bg-[#f3f6fc] p-4">
+          <RiskResult level={assessment.effectiveRiskLevel} scoreType={assessment.scoreType} probability={assessment.probabilityCvd} />
+          {overridden && (
+            <p className="mt-2 text-[12.5px] font-semibold text-[#b45309]">{`Level set by ${assessment.overriddenByUsername ?? "a clinician"} (override).`}</p>
+          )}
+        </div>
       </Card>
 
       {explanation?.prevent && (

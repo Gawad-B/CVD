@@ -98,7 +98,8 @@ export function ModelRegistry() {
   const { user } = useAuth();
   const [pending, setPending] = useState<Model | null>(null);
   const [error, setError] = useState("");
-  const models = loaded.data;
+  // Retired models are history only (old assessments keep their name); they are not shown here.
+  const models = loaded.data?.filter((m) => m.status !== "retired") ?? null;
   const canActivate = user?.role === "admin";
 
   async function confirmActivate() {
@@ -145,7 +146,17 @@ export function ModelRegistry() {
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader title="Model registry" subtitle="Only one model scores new encounters at a time" />
+      <PageHeader
+        title="Model registry"
+        subtitle="Only one model scores new encounters at a time"
+        help={
+          <>
+            <strong>Screening model</strong>: shows <strong>Low / Medium / High</strong> risk of having heart disease now.{" "}
+            <strong>10-year death model</strong>: shows the <strong>percentage</strong> chance of dying from heart disease or stroke in 10 years.
+            Admins can switch with “Use this model”; past assessments keep the model that scored them.
+          </>
+        }
+      />
       {error && (
         <p role="alert" className="rounded-[12px] bg-[#fee2e2] px-4 py-3 text-[13px] font-semibold text-[#b91c1c]">
           {error}

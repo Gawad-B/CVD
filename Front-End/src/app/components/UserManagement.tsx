@@ -307,7 +307,12 @@ export function UserManagement() {
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader title="Users" subtitle="Who can sign in and what they can see" action={addButton} />
+      <PageHeader
+        title="Users"
+        subtitle="Who can sign in and what they can see"
+        action={addButton}
+        help="Admins manage users and models. Doctors and clinicians see patients and run assessments. Auditors can only read the audit log and results. Deactivate an account instead of deleting it to keep its history."
+      />
       {actionError && (
         <p role="alert" className="rounded-[12px] bg-[#fee2e2] px-4 py-3 text-[13px] font-semibold text-[#b91c1c]">
           {actionError}

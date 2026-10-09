@@ -11,7 +11,7 @@ import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, matchesQuery, sexLabel } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
 import { PageHeader } from "./PageHeader";
-import { levelReason } from "./formatScore";
+import { riskSummary } from "./RiskResult";
 
 const fullName = (p: Patient) => `${p.firstName} ${p.lastName}`.trim();
 
@@ -67,7 +67,7 @@ export function PatientsList() {
                 <th scope="col" className={TH}>Patient</th>
                 <th scope="col" className={TH}>Sex, age</th>
                 <th scope="col" className={TH}>Last assessment</th>
-                <th scope="col" className={TH}>Level based on</th>
+                <th scope="col" className={TH}>Details</th>
                 <th scope="col" className={TH}>Risk</th>
                 <th scope="col" className={TH}>
                   <span className="sr-only">Action</span>
@@ -98,7 +98,7 @@ export function PatientsList() {
                     <td className={`${TD} text-[#33405a]`}>{last ? formatDate(last.createdAt) : "—"}</td>
                     <td className={`${TD} tabular-nums text-[#33405a]`}>
                       {last
-                        ? levelReason({ ...last, overrideRiskLevel: last.effectiveRiskLevel !== last.riskLevel ? last.effectiveRiskLevel : null })
+                        ? riskSummary({ ...last, overrideRiskLevel: last.effectiveRiskLevel !== last.riskLevel ? last.effectiveRiskLevel : null })
                         : "—"}
                     </td>
                     <td className={TD}>
@@ -148,6 +148,7 @@ export function PatientsList() {
         title="Patients"
         subtitle={patients ? `${patients.length} ${patients.length === 1 ? "patient" : "patients"} in your clinic` : undefined}
         action={addButton}
+        help="Click Add patient to register someone, then Open to see their history or run a new assessment. The Risk badge shows the latest result and Details says what decided it."
       />
       {body}
       <AddPatientModal open={modalOpen} onClose={() => setModalOpen(false)} onCreated={(p) => setCreated((prev) => [p, ...prev])} />

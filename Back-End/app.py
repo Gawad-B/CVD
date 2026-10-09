@@ -800,6 +800,11 @@ def fallback_risk_classification(probability: float, model_key: str = inference.
     return {"risk_level": level, "recommendation": RECOMMENDATION_BY_LEVEL[level]}
 
 
+def score_type(explanation: Optional[Dict[str, Any]]) -> str:
+    """"death_10y" when a prospective model scored it (show the percentage), else "level" (show Low/Medium/High)."""
+    return "death_10y" if inference.is_prospective((explanation or {}).get("modelKey") or "") else "level"
+
+
 def level_driver(explanation: Optional[Dict[str, Any]], risk_level: Optional[str]) -> Dict[str, Any]:
     """What set an assessment's level, so lists can show the score behind the badge."""
     explanation = explanation or {}
@@ -811,7 +816,7 @@ def level_driver(explanation: Optional[Dict[str, Any]], risk_level: Optional[str
         source = "alerts"
     else:
         source = explanation.get("riskSource")
-    return {"level_source": source, "prevent_risk": prevent_risk}
+    return {"level_source": source, "prevent_risk": prevent_risk, "score_type": score_type(explanation)}
 
 
 @app.post("/api/auth/login")
@@ -1333,7 +1338,8 @@ def get_models(
                    algorithm, use_case, status, accuracy, auc, description, validation_metrics, artifact_uri,
                    precision_score, recall_score, f1_score, created_at
             FROM model_registry
-            ORDER BY (status = 'retired'), created_at DESC
+            WHERE status <> 'retired'
+            ORDER BY created_at DESC
             """
         )
         models = cursor.fetchall()
@@ -1627,6 +1633,7 @@ def get_risk_assessment(
         "inputs": inputs,
         "override_history": override_history,
         "explanation": assessment["explanation_json"] or {},
+        "score_type": score_type(assessment["explanation_json"]),
     }
 
 
@@ -1916,6 +1923,7 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
         "missingInputs": missing,
         "modelVersion": explanation["modelVersion"],
         "modelName": model_info["model_name"],
+        "scoreType": score_type(explanation),
         "scoreMeaning": explanation["scoreMeaning"],
         "scoreCaveat": explanation["scoreCaveat"],
         "contributions": explanation["contributions"],

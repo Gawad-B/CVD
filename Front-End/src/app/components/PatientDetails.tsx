@@ -11,7 +11,8 @@ import { ageFromDob, dobProblem, todayIso } from "./dateOfBirth";
 import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, isOverridden, sexLabel } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
-import { levelReason } from "./formatScore";
+import { riskSummary } from "./RiskResult";
+import { HelpHint } from "../ui/InfoTip";
 
 const textarea =
   "w-full rounded-[12px] border border-[#d6deec] bg-white px-3.5 py-3 text-[15px] leading-relaxed text-[#0b1530] placeholder:text-[#8fa1c4] focus:border-[#1f5eff]";
@@ -260,6 +261,11 @@ export function PatientDetails() {
     <div className="flex flex-col gap-5">
       {back}
 
+      <HelpHint>
+        This patient’s record and every assessment, newest first. Use <strong>New assessment</strong> to screen them again
+        (each run is saved separately, so you can compare over time) and <strong>Open</strong> on a result for the full report.
+      </HelpHint>
+
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 items-center gap-4">
@@ -342,7 +348,7 @@ export function PatientDetails() {
                       <span className="text-[12.5px] capitalize text-[#5b6b85]">{`model: ${a.riskLevel}`}</span>
                     </>
                   )}
-                  <span className="text-[13.5px] tabular-nums text-[#33405a]">{`Based on ${levelReason(a)}`}</span>
+                  <span className="text-[13.5px] tabular-nums text-[#33405a]">{riskSummary(a)}</span>
                   <span className="text-[12.5px] text-[#5b6b85]">{a.reviewStatus === "reviewed" ? "Signed off" : "Pending review"}</span>
                   <span className="ml-auto text-[12.5px] text-[#5b6b85]">{dateTime(a.createdAt)}</span>
                 </div>

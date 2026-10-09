@@ -11,6 +11,8 @@ export const HEART_RATE_MAX = 220;
 interface FieldBase {
   name: string;
   label: string;
+  /** Short plain-language help shown under the field: what it is and the normal range. */
+  hint?: string;
   /** Shown (and, for required fields, required) only when this returns true. */
   when?: (values: FormValues) => boolean;
 }
@@ -23,7 +25,7 @@ interface SelectField extends FieldBase {
 }
 export type AssessmentField = NumberField | SelectField;
 
-const NUM = (name: string, label: string): NumberField => ({ kind: "number", name, label });
+const NUM = (name: string, label: string, hint?: string): NumberField => ({ kind: "number", name, label, hint });
 
 const YES_NO_OPTIONS = [
   { value: "no", label: "No" },
@@ -50,43 +52,43 @@ export const isShown = (field: AssessmentField, values: FormValues) => !field.wh
  * Heart rate is required too but is recorded outside these lists (it is not a model input).
  */
 export const REQUIRED_FIELDS: readonly AssessmentField[] = [
-  NUM("bmi", "BMI (kg/m²)"),
-  NUM("systolicBp", "Systolic BP (mmHg)"),
-  NUM("diastolicBp", "Diastolic BP (mmHg)"),
-  { kind: "select", name: "highBp", label: "History of high BP", options: YES_NO_OPTIONS },
-  { kind: "select", name: "bpMed", label: "On BP medication", options: YES_NO_OPTIONS, when: (v) => v.highBp === "yes" },
-  NUM("totalCholesterol", "Total cholesterol (mg/dL)"),
-  NUM("hdl", "HDL (mg/dL)"),
-  NUM("triglycerides", "Triglycerides (mg/dL)"),
-  { kind: "select", name: "highChol", label: "History of high cholesterol", options: YES_NO_OPTIONS },
-  { kind: "select", name: "cholMed", label: "On cholesterol-lowering medication", options: YES_NO_OPTIONS },
-  NUM("creatinine", "Creatinine (mg/dL)"),
-  NUM("hba1cPercent", "HbA1c (%)"),
-  { kind: "select", name: "diabetic", label: "Diabetic", options: DIABETIC_OPTIONS },
-  { ...NUM("urineAcr", "Urine albumin/creatinine (mg/g)"), when: isDiabetic },
-  { kind: "select", name: "smoker", label: "Ever smoked (100+ cigarettes)", options: YES_NO_OPTIONS },
-  { kind: "select", name: "smokesNow", label: "Smokes now", options: YES_NO_OPTIONS, when: (v) => v.smoker === "yes" },
-  { kind: "select", name: "generalHealth", label: "Self-rated general health", options: GENERAL_HEALTH_OPTIONS },
+  NUM("bmi", "BMI (kg/m²)", "Weight (kg) ÷ height (m)². Healthy 18.5–24.9."),
+  NUM("systolicBp", "Systolic BP (mmHg)", "Top number. Normal under 120."),
+  NUM("diastolicBp", "Diastolic BP (mmHg)", "Bottom number. Normal under 80."),
+  { kind: "select", name: "highBp", label: "History of high BP", options: YES_NO_OPTIONS, hint: "Ever told by a doctor they have high blood pressure." },
+  { kind: "select", name: "bpMed", label: "On BP medication", options: YES_NO_OPTIONS, when: (v) => v.highBp === "yes", hint: "Currently taking blood-pressure tablets." },
+  NUM("totalCholesterol", "Total cholesterol (mg/dL)", "From the lipid panel. Desirable under 200."),
+  NUM("hdl", "HDL (mg/dL)", "“Good” cholesterol. Low: under 40 (men) or 50 (women)."),
+  NUM("triglycerides", "Triglycerides (mg/dL)", "From the same lipid panel. Normal under 150."),
+  { kind: "select", name: "highChol", label: "History of high cholesterol", options: YES_NO_OPTIONS, hint: "Ever told by a doctor they have high cholesterol." },
+  { kind: "select", name: "cholMed", label: "On cholesterol-lowering medication", options: YES_NO_OPTIONS, hint: "Currently taking a statin or similar." },
+  NUM("creatinine", "Creatinine (mg/dL)", "Kidney blood test, used to calculate eGFR. Typical 0.6–1.3."),
+  NUM("hba1cPercent", "HbA1c (%)", "3-month average blood sugar. Normal under 5.7; diabetes 6.5 or more."),
+  { kind: "select", name: "diabetic", label: "Diabetic", options: DIABETIC_OPTIONS, hint: "Diagnosed by a doctor. Borderline means prediabetes." },
+  { ...NUM("urineAcr", "Urine albumin/creatinine (mg/g)", "Urine test for kidney damage, needed for diabetics. Normal under 30."), when: isDiabetic },
+  { kind: "select", name: "smoker", label: "Ever smoked (100+ cigarettes)", options: YES_NO_OPTIONS, hint: "At least 100 cigarettes in their whole life." },
+  { kind: "select", name: "smokesNow", label: "Smokes now", options: YES_NO_OPTIONS, when: (v) => v.smoker === "yes", hint: "Smokes every day or some days." },
+  { kind: "select", name: "generalHealth", label: "Self-rated general health", options: GENERAL_HEALTH_OPTIONS, hint: "Ask: “How would you rate your health in general?”" },
 ];
 
 /** Lower-weight inputs; all optional, blank means "not recorded" (the API imputes and reports it). */
 export const MORE_FIELDS: readonly AssessmentField[] = [
-  NUM("waistCm", "Waist (cm)"),
-  { ...NUM("urineAcr", "Urine albumin/creatinine (mg/g)"), when: (v) => !isDiabetic(v) },
-  NUM("glucose", "Glucose (mg/dL)"),
-  NUM("uricAcid", "Uric acid (mg/dL)"),
-  NUM("hsCrp", "hs-CRP (mg/L)"),
-  NUM("sodium", "Sodium (mmol/L)"),
-  NUM("wbc", "WBC (10³/µL)"),
-  NUM("hemoglobin", "Hemoglobin (g/dL)"),
-  NUM("platelets", "Platelets (10³/µL)"),
-  NUM("rdw", "RDW (%)"),
-  NUM("sleepHoursWeekday", "Sleep, weekday (hours)"),
-  NUM("sleepHoursWeekend", "Sleep, weekend (hours)"),
-  NUM("sedentaryMinutesAlt", "Sedentary minutes per day"),
-  NUM("incomeRatio", "Income-to-poverty ratio"),
-  { kind: "select", name: "race", label: "Race/ethnicity", options: RACE_OPTIONS },
-  { kind: "select", name: "education", label: "Education", options: EDUCATION_OPTIONS },
+  NUM("waistCm", "Waist (cm)", "At the navel. High: over 102 (men) or 88 (women)."),
+  { ...NUM("urineAcr", "Urine albumin/creatinine (mg/g)", "Urine test for kidney damage. Normal under 30."), when: (v) => !isDiabetic(v) },
+  NUM("glucose", "Glucose (mg/dL)", "Fasting blood sugar. Normal 70–99."),
+  NUM("uricAcid", "Uric acid (mg/dL)", "Typical 3.5–7.2."),
+  NUM("hsCrp", "hs-CRP (mg/L)", "Inflammation marker. Under 1 low, over 3 high."),
+  NUM("sodium", "Sodium (mmol/L)", "Normal 135–145."),
+  NUM("wbc", "WBC (10³/µL)", "White blood cells. Normal 4–11."),
+  NUM("hemoglobin", "Hemoglobin (g/dL)", "Typical 12–17."),
+  NUM("platelets", "Platelets (10³/µL)", "Normal 150–450."),
+  NUM("rdw", "RDW (%)", "Red-cell size variation. Normal 11.5–14.5."),
+  NUM("sleepHoursWeekday", "Sleep, weekday (hours)", "Usual hours of sleep on a work night."),
+  NUM("sleepHoursWeekend", "Sleep, weekend (hours)", "Usual hours of sleep on a day off."),
+  NUM("sedentaryMinutesAlt", "Sedentary minutes per day", "Time sitting: work, TV, computer, driving."),
+  NUM("incomeRatio", "Income-to-poverty ratio", "Family income ÷ poverty line. 1 = at the line, 5 = five times or more."),
+  { kind: "select", name: "race", label: "Race/ethnicity", options: RACE_OPTIONS, hint: "Self-reported. Used only as a statistical input." },
+  { kind: "select", name: "education", label: "Education", options: EDUCATION_OPTIONS, hint: "Highest level completed." },
 ];
 
 export function initialValues(): FormValues {

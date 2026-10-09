@@ -1,3 +1,4 @@
+import { HelpHint } from "../ui/InfoTip";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import {
@@ -151,8 +152,14 @@ export function Dashboard() {
   const model = models.data?.find((m) => m.isActive) ?? null;
 
   return (
-    <div className={GRID}>
+    <div className="flex flex-col gap-5">
       <h1 className="sr-only">Dashboard</h1>
+      <HelpHint>
+        Pick a patient on the left to see their heart, readings and result. The heart’s colour shows the risk level (green low, amber
+        medium, red high). On the right: the recommendation, with <strong>Sign off</strong> once you have reviewed it or{" "}
+        <strong>Override</strong> to change the level.
+      </HelpHint>
+    <div className={GRID}>
 
       <PanelFrame>
         <VitalsCard assessment={assessment} />
@@ -208,6 +215,7 @@ export function Dashboard() {
       {overrideOpen && assessment && (
         <OverrideModal assessment={assessment} onClose={() => setOverrideOpen(false)} onSaved={onOverrideSaved} />
       )}
+    </div>
     </div>
   );
 }

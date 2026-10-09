@@ -78,9 +78,12 @@ describe("RiskAssessmentDetails", () => {
   it("shows model vs effective risk, the override history timeline and original recommendation", async () => {
     renderPage();
     expect(await screen.findByRole("heading", { name: "Marisol Quill" })).toBeInTheDocument();
-    expect(screen.getByText("42%")).toBeInTheDocument();
-    expect(screen.getByText("medium risk")).toHaveAttribute("data-variant", "medium");
-    expect(screen.getAllByText("high risk")[0]).toHaveAttribute("data-variant", "high");
+    // Screening model: the final level in words and on the meter, no percentage.
+    const result = screen.getByTestId("risk-result");
+    expect(result).toHaveTextContent("High risk");
+    expect(within(result).getByRole("img", { name: "Risk level: high" })).toBeInTheDocument();
+    expect(result).not.toHaveTextContent("42%");
+    expect(screen.getByText("medium risk")).toHaveAttribute("data-variant", "medium"); // model on its own
 
     const history = screen.getByRole("list", { name: "Override history" });
     const items = within(history).getAllByRole("listitem");

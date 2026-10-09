@@ -20,10 +20,14 @@ export interface PatientLastAssessment {
   reviewStatus: string;
   levelSource?: LevelSource;
   preventRisk?: number;
+  scoreType?: ScoreType;
 }
 
 /** What set an assessment's level: clinical alerts, the PREVENT equation, or the ML model. */
 export type LevelSource = "alerts" | "prevent" | "model";
+
+/** How to show the result: the 10-year death model as a percentage, the screening model as Low/Medium/High. */
+export type ScoreType = "death_10y" | "level";
 
 /** "unknown" = the API sent a value this client does not recognise; shown neutrally, never as low. */
 export type RiskLevel = "low" | "medium" | "high" | "unknown";
@@ -123,6 +127,7 @@ export interface RiskAssessment {
   overrideHistory?: OverrideHistoryEntry[];
   levelSource?: LevelSource;
   preventRisk?: number;
+  scoreType?: ScoreType;
 }
 
 export interface OverrideHistoryEntry {
@@ -305,6 +310,7 @@ export interface RiskAssessmentRequest {
 
 export interface RiskAssessmentResponse {
   probability: number;
+  scoreType?: ScoreType;
   riskLevel: "low" | "medium" | "high";
   recommendation: string;
   assessmentId?: number;

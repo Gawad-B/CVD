@@ -55,7 +55,8 @@ describe("ModelRegistry", () => {
     api.getModels.mockResolvedValue([model({ modelId: 3, modelVersion: "3.0.0", isActive: false, status: "retired" }), mortality, model()]);
     render(<ModelRegistry />);
     const cards = await screen.findAllByTestId("model-card");
-    const [active, available, retired] = cards;
+    expect(cards).toHaveLength(2); // retired models are hidden
+    const [active, available] = cards;
     expect(active).toHaveAttribute("data-active", "true");
     expect(within(active).getByText("Active")).toBeInTheDocument();
     expect(within(active).getByText("v4.1.0 · trained 8 Oct 2026")).toBeInTheDocument();
@@ -66,8 +67,7 @@ describe("ModelRegistry", () => {
     expect(within(active).getByRole("button", { name: "Scoring new encounters" })).toBeDisabled();
     expect(within(available).getByText("Score: 10-year probability of cardiovascular death.")).toBeInTheDocument();
     expect(within(available).getByText("Available")).toBeInTheDocument();
-    expect(within(retired).getByText("Retired")).toBeInTheDocument();
-    expect(within(retired).queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByText("Retired")).not.toBeInTheDocument();
   });
 
   it("lets an admin switch the active model after confirming", async () => {
