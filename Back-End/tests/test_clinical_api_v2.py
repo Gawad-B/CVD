@@ -258,7 +258,8 @@ def test_patients_last_assessment(client, world, make_patient):
     patients = {p["patient_id"]: p for p in client.get("/api/patients", headers=world["real"]).json()}
     last = patients[world["pid"]]["last_assessment"]
     assert last["assessment_id"] == world["aid"]
-    assert set(last) == {"assessment_id", "created_at", "probability_cvd", "risk_level", "effective_risk_level", "review_status"}
+    assert set(last) == {"assessment_id", "created_at", "probability_cvd", "risk_level", "effective_risk_level", "review_status",
+                         "level_source", "prevent_risk"}
     assert last["risk_level"] == last["effective_risk_level"] and last["review_status"] == "pending"
 
     newer = client.post("/api/risk-assessments", json={"patientId": world["pid"], "sbp": 120, "dbp": 80, "age": 60}, headers=world["real"]).json()

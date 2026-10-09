@@ -11,7 +11,7 @@ import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, matchesQuery, sexLabel } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
 import { PageHeader } from "./PageHeader";
-import { formatScore } from "./formatScore";
+import { levelReason } from "./formatScore";
 
 const fullName = (p: Patient) => `${p.firstName} ${p.lastName}`.trim();
 
@@ -67,7 +67,7 @@ export function PatientsList() {
                 <th scope="col" className={TH}>Patient</th>
                 <th scope="col" className={TH}>Sex, age</th>
                 <th scope="col" className={TH}>Last assessment</th>
-                <th scope="col" className={TH}>Model score</th>
+                <th scope="col" className={TH}>Level based on</th>
                 <th scope="col" className={TH}>Risk</th>
                 <th scope="col" className={TH}>
                   <span className="sr-only">Action</span>
@@ -97,7 +97,9 @@ export function PatientsList() {
                     <td className={`${TD} text-[#33405a]`}>{sexAge(p)}</td>
                     <td className={`${TD} text-[#33405a]`}>{last ? formatDate(last.createdAt) : "—"}</td>
                     <td className={`${TD} tabular-nums text-[#33405a]`}>
-                      {last ? formatScore(last.probabilityCvd) : "—"}
+                      {last
+                        ? levelReason({ ...last, overrideRiskLevel: last.effectiveRiskLevel !== last.riskLevel ? last.effectiveRiskLevel : null })
+                        : "—"}
                     </td>
                     <td className={TD}>
                       {last ? (

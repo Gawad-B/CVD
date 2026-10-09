@@ -246,7 +246,7 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
             {(a) => <Input {...a} readOnly value={age ?? ""} placeholder="—" className="!bg-[#f3f6fc]" />}
           </Field>
           {REQUIRED_FIELDS.filter((f) => isShown(f, values)).map((f) => renderField(f, values, errors, set, "Select…"))}
-          <Field label="Heart rate (bpm)" hint="Optional · not used by the model" error={errors.heartRate} className="min-[480px]:col-span-2">
+          <Field label="Heart rate (bpm)" hint="Not used by the model" error={errors.heartRate} className="min-[480px]:col-span-2">
             {(a) => (
               <Input
                 {...a}
@@ -277,9 +277,9 @@ export function NewAssessmentForm({ patients, initialPatientId, onCreated }: Pro
             {moreOpen && (
               <div className="flex flex-col gap-3.5 rounded-[14px] bg-[#f3f6fc] p-3.5">
                 <p className="text-[12.5px] text-[#5b6b85]">
-                  All optional. Urine albumin/creatinine also refines the PREVENT risk. Anything left blank is estimated from the training data (median or most common answer).
+                  All optional. Anything left blank is estimated from the training data (median or most common answer).
                 </p>
-                <div className={GRID}>{MORE_FIELDS.map((f) => renderField(f, values, errors, set))}</div>
+                <div className={GRID}>{MORE_FIELDS.filter((f) => isShown(f, values)).map((f) => renderField(f, values, errors, set))}</div>
                 <Field label="Clinical notes">
                   {(a) => (
                     <textarea

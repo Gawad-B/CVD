@@ -91,6 +91,7 @@ async function fillCompact(user: ReturnType<typeof userEvent.setup>) {
   await user.selectOptions(screen.getByLabelText("History of high BP"), "no");
   await user.type(screen.getByLabelText("Total cholesterol (mg/dL)"), "190");
   await user.type(screen.getByLabelText("HDL (mg/dL)"), "52");
+  await user.type(screen.getByLabelText("Triglycerides (mg/dL)"), "140");
   await user.selectOptions(screen.getByLabelText("History of high cholesterol"), "no");
   await user.selectOptions(screen.getByLabelText("On cholesterol-lowering medication"), "no");
   await user.type(screen.getByLabelText("Creatinine (mg/dL)"), "0.9");
@@ -98,6 +99,11 @@ async function fillCompact(user: ReturnType<typeof userEvent.setup>) {
   await user.selectOptions(screen.getByLabelText("Diabetic"), "no");
   await user.selectOptions(screen.getByLabelText("Ever smoked (100+ cigarettes)"), "no");
   await user.selectOptions(screen.getByLabelText("Self-rated general health"), "2");
+}
+
+async function fillRequired(user: ReturnType<typeof userEvent.setup>) {
+  await fillCompact(user);
+  await user.type(screen.getByLabelText("Heart rate (bpm)"), "72");
 }
 
 beforeEach(() => {
@@ -113,7 +119,7 @@ describe("Assessments: past list", () => {
     const row = (await screen.findByText("Alder Fennimore")).closest("a")!;
     expect(row).toHaveAttribute("href", "/dashboard?assessment=2");
     expect(within(row).getByText("P-0011 · 1 Oct 2026 · Signed off")).toBeInTheDocument();
-    expect(within(row).getByText("25.0%")).toBeInTheDocument();
+    expect(within(row).getByText("Model 25%")).toBeInTheDocument();
     expect(within(row).getByText("high")).toHaveAttribute("data-variant", "high");
     expect(within(screen.getByText("Marisol Quill").closest("a")!).getByText(/Pending review/)).toBeInTheDocument();
   });
@@ -178,7 +184,7 @@ describe("Assessments: new assessment form", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "Run assessment" }));
     expect(screen.getByText("Select a patient.")).toBeInTheDocument();
-    expect(screen.getAllByText("Required.")).toHaveLength(7);
+    expect(screen.getAllByText("Required.")).toHaveLength(9);
     expect(screen.getAllByText("Choose an option.")).toHaveLength(6);
     expect(screen.getByLabelText("Patient")).toHaveFocus();
     expect(api.submitRiskAssessment).not.toHaveBeenCalled();
@@ -206,7 +212,7 @@ describe("Assessments: new assessment form", () => {
     expect(screen.queryByLabelText("Sodium (mmol/L)")).not.toBeInTheDocument();
   });
 
-  it("omits heartRate unless provided and sends it as an integer", async () => {
+  it("requires heart rate and sends it as an integer", async () => {
     const user = userEvent.setup();
     api.submitRiskAssessment.mockResolvedValue({ probability: 0.3, riskLevel: "low", recommendation: "ok", assessmentId: 77 });
     renderPage("/assessments?patient=10");
@@ -214,20 +220,19 @@ describe("Assessments: new assessment form", () => {
     await fillCompact(user);
 
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
-    await waitFor(() => expect(api.submitRiskAssessment).toHaveBeenCalledTimes(1));
-    const first = api.submitRiskAssessment.mock.calls[0][0];
-    expect(first.patientId).toBe(10);
-    expect(first.payload).not.toHaveProperty("heartRate");
-    expect(first.payload).toMatchObject({ bmi: 27.5, systolicBp: 128, diastolicBp: 82, smoker: "no", smokesNow: "no", highBp: "no", bpMed: "no", totalCholesterol: 190, hdl: 52, creatinine: 0.9, hba1cPercent: 5.6, diabetic: "no", generalHealth: 2 });
-    expect(first.payload.waistCm).toBeUndefined();
-    expect(first.payload.age).toBeGreaterThanOrEqual(60);
+    expect(screen.getByLabelText("Heart rate (bpm)")).toHaveAccessibleDescription(/Required\./);
+    expect(api.submitRiskAssessment).not.toHaveBeenCalled();
 
     await user.type(screen.getByLabelText("Heart rate (bpm)"), "72");
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
-    await waitFor(() => expect(api.submitRiskAssessment).toHaveBeenCalledTimes(2));
-    const second = api.submitRiskAssessment.mock.calls[1][0].payload;
-    expect(second.heartRate).toBe(72);
-    expect(Number.isInteger(second.heartRate)).toBe(true);
+    await waitFor(() => expect(api.submitRiskAssessment).toHaveBeenCalledTimes(1));
+    const first = api.submitRiskAssessment.mock.calls[0][0];
+    expect(first.patientId).toBe(10);
+    expect(first.payload).toMatchObject({ bmi: 27.5, systolicBp: 128, diastolicBp: 82, smoker: "no", smokesNow: "no", highBp: "no", bpMed: "no", totalCholesterol: 190, hdl: 52, triglycerides: 140, creatinine: 0.9, hba1cPercent: 5.6, diabetic: "no", generalHealth: 2 });
+    expect(first.payload.waistCm).toBeUndefined();
+    expect(first.payload.age).toBeGreaterThanOrEqual(60);
+    expect(first.payload.heartRate).toBe(72);
+    expect(Number.isInteger(first.payload.heartRate)).toBe(true);
   });
 
   it("rejects a fractional or out-of-range heart rate client-side", async () => {
@@ -252,11 +257,11 @@ describe("Assessments: new assessment form", () => {
     });
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
 
     const panel = await screen.findByRole("region", { name: "Assessment result" });
-    expect(within(panel).getByText("66.0%")).toBeInTheDocument();
+    expect(within(panel).getByText("66%")).toBeInTheDocument();
     expect(within(panel).getByText("high risk")).toHaveAttribute("data-variant", "high");
     expect(within(panel).getByText("Refer to cardiology.")).toBeInTheDocument();
     expect(within(panel).getByText(/estimated from population medians: HbA1c \(%\), hs-CRP \(mg\/L\)/)).toBeInTheDocument();
@@ -268,7 +273,7 @@ describe("Assessments: new assessment form", () => {
     const user = userEvent.setup();
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Optional inputs" }));
 
     await user.selectOptions(screen.getByLabelText("Patient"), "11");
@@ -292,7 +297,7 @@ describe("Assessments: new assessment form", () => {
     api.submitRiskAssessment.mockResolvedValue({ probability: 0.3, riskLevel: "low", recommendation: "ok", assessmentId: 77 });
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     const run = screen.getByRole("button", { name: "Run assessment" });
     await user.click(run);
     await screen.findByRole("region", { name: "Assessment result" });
@@ -317,7 +322,7 @@ describe("Assessments: new assessment form", () => {
     await screen.findByLabelText("Patient");
     await screen.findByText("Wren Oakes");
     api.getRiskAssessments.mockReturnValue(new Promise(() => undefined));
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
     await screen.findByRole("region", { name: "Assessment result" });
     expect(screen.getByText("Wren Oakes")).toBeInTheDocument();
@@ -328,7 +333,7 @@ describe("Assessments: new assessment form", () => {
     api.submitRiskAssessment.mockResolvedValue({ probability: 0.3, riskLevel: "low", recommendation: "ok", assessmentId: 77 });
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
     const panel = await screen.findByRole("region", { name: "Assessment result" });
     const live = panel.closest("[aria-live]");
@@ -357,7 +362,7 @@ describe("Assessments: new assessment form", () => {
     await screen.findByText("Wren Oakes");
     await screen.findByLabelText("Patient");
     api.getRiskAssessments.mockRejectedValue(new Error("boom"));
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
     expect(await screen.findByText(/Couldn't refresh the list/)).toBeInTheDocument();
     expect(screen.getByText("Wren Oakes")).toBeInTheDocument();
@@ -367,7 +372,7 @@ describe("Assessments: new assessment form", () => {
     const user = userEvent.setup();
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Optional inputs" }));
     await user.type(screen.getByLabelText("Sodium (mmol/L)"), "500");
     await user.click(screen.getByRole("button", { name: "Optional inputs" }));
@@ -380,7 +385,7 @@ describe("Assessments: new assessment form", () => {
     api.submitRiskAssessment.mockResolvedValue({ probability: 0.3, riskLevel: "weird", recommendation: "ok", assessmentId: 5 });
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
     expect(await screen.findByText("unknown risk")).toBeInTheDocument();
   });
@@ -390,7 +395,7 @@ describe("Assessments: new assessment form", () => {
     api.submitRiskAssessment.mockImplementationOnce(() => Promise.reject(new Error("systolicBp: Input should be less than or equal to 260")));
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
     expect(await screen.findByText("systolicBp: Input should be less than or equal to 260")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Assessment result" })).not.toBeInTheDocument();
@@ -400,7 +405,7 @@ describe("Assessments: new assessment form", () => {
     const user = userEvent.setup();
     renderPage("/assessments?patient=10");
     await screen.findByLabelText("Patient");
-    await fillCompact(user);
+    await fillRequired(user);
     await user.click(screen.getByRole("button", { name: "Optional inputs" }));
     await user.type(screen.getByLabelText("Sodium (mmol/L)"), "500");
     await user.click(screen.getByRole("button", { name: "Optional inputs" }));

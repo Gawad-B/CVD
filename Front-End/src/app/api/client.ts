@@ -9,6 +9,7 @@ import type {
   OverrideHistoryEntry,
   RiskAssessmentFilters,
   RiskLevel,
+  LevelSource,
   CreateEncounterInput,
   CreateUserInput,
   DashboardStats,
@@ -90,6 +91,15 @@ export function asRiskLevel(value: unknown, fallback: RiskLevel = "unknown"): Ri
   return "unknown";
 }
 
+function mapLevelSource(raw: any): { levelSource?: LevelSource; preventRisk?: number } {
+  const source = raw.levelSource ?? raw.level_source;
+  const prevent = Number(raw.preventRisk ?? raw.prevent_risk);
+  return {
+    ...(source === "alerts" || source === "prevent" || source === "model" ? { levelSource: source } : {}),
+    ...(raw.preventRisk != null || raw.prevent_risk != null ? (Number.isFinite(prevent) ? { preventRisk: prevent } : {}) : {}),
+  };
+}
+
 function mapLastAssessment(raw: any): Patient["lastAssessment"] {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -102,6 +112,7 @@ function mapLastAssessment(raw: any): Patient["lastAssessment"] {
     riskLevel,
     effectiveRiskLevel: asRiskLevel(raw.effectiveRiskLevel ?? raw.effective_risk_level, riskLevel),
     reviewStatus: String(raw.reviewStatus ?? raw.review_status ?? "pending"),
+    ...mapLevelSource(raw),
   };
 }
 
@@ -292,6 +303,7 @@ function mapRiskAssessment(raw: any): RiskAssessment {
     effectiveRecommendation: String(raw.effectiveRecommendation ?? raw.effective_recommendation ?? recommendation),
     inputs: mapInputs(raw.inputs),
     overrideHistory: mapHistory(raw.overrideHistory ?? raw.override_history),
+    ...mapLevelSource(raw),
   };
 }
 

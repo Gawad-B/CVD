@@ -11,7 +11,7 @@ import { ageFromDob, dobProblem, todayIso } from "./dateOfBirth";
 import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, isOverridden, sexLabel } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
-import { formatScore } from "./formatScore";
+import { levelReason } from "./formatScore";
 
 const textarea =
   "w-full rounded-[12px] border border-[#d6deec] bg-white px-3.5 py-3 text-[15px] leading-relaxed text-[#0b1530] placeholder:text-[#8fa1c4] focus:border-[#1f5eff]";
@@ -342,7 +342,7 @@ export function PatientDetails() {
                       <span className="text-[12.5px] capitalize text-[#5b6b85]">{`model: ${a.riskLevel}`}</span>
                     </>
                   )}
-                  <span className="text-[13.5px] tabular-nums text-[#33405a]">{`Model score ${formatScore(a.probabilityCvd)}`}</span>
+                  <span className="text-[13.5px] tabular-nums text-[#33405a]">{`Based on ${levelReason(a)}`}</span>
                   <span className="text-[12.5px] text-[#5b6b85]">{a.reviewStatus === "reviewed" ? "Signed off" : "Pending review"}</span>
                   <span className="ml-auto text-[12.5px] text-[#5b6b85]">{dateTime(a.createdAt)}</span>
                 </div>

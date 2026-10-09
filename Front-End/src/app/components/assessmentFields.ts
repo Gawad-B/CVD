@@ -36,13 +36,18 @@ export const DIABETIC_OPTIONS = [
   { value: "yes", label: "Yes" },
 ] as const;
 
+const isDiabetic = (v: FormValues) => v.diabetic === "yes";
+
 /** Whether a field applies given the current answers (NHANES skip patterns). */
 export const isShown = (field: AssessmentField, values: FormValues) => !field.when || field.when(values);
 
 /**
  * Required inputs: everything the AHA PREVENT 10-year risk needs (age from the date of birth, sex
  * from the patient record, BP, cholesterol, kidney function via creatinine, diabetes, current
- * smoking, BP and cholesterol medication, HbA1c) plus the strongest inputs of the NHANES model.
+ * smoking, BP and cholesterol medication, HbA1c) plus the strongest inputs of the NHANES model,
+ * plus what a clinician expects on any cardiovascular screen: the full lipid panel (triglycerides)
+ * and, for diabetics, urine albumin/creatinine (annual per ADA/KDIGO; it also refines PREVENT).
+ * Heart rate is required too but is recorded outside these lists (it is not a model input).
  */
 export const REQUIRED_FIELDS: readonly AssessmentField[] = [
   NUM("bmi", "BMI (kg/m²)"),
@@ -52,11 +57,13 @@ export const REQUIRED_FIELDS: readonly AssessmentField[] = [
   { kind: "select", name: "bpMed", label: "On BP medication", options: YES_NO_OPTIONS, when: (v) => v.highBp === "yes" },
   NUM("totalCholesterol", "Total cholesterol (mg/dL)"),
   NUM("hdl", "HDL (mg/dL)"),
+  NUM("triglycerides", "Triglycerides (mg/dL)"),
   { kind: "select", name: "highChol", label: "History of high cholesterol", options: YES_NO_OPTIONS },
   { kind: "select", name: "cholMed", label: "On cholesterol-lowering medication", options: YES_NO_OPTIONS },
   NUM("creatinine", "Creatinine (mg/dL)"),
   NUM("hba1cPercent", "HbA1c (%)"),
   { kind: "select", name: "diabetic", label: "Diabetic", options: DIABETIC_OPTIONS },
+  { ...NUM("urineAcr", "Urine albumin/creatinine (mg/g)"), when: isDiabetic },
   { kind: "select", name: "smoker", label: "Ever smoked (100+ cigarettes)", options: YES_NO_OPTIONS },
   { kind: "select", name: "smokesNow", label: "Smokes now", options: YES_NO_OPTIONS, when: (v) => v.smoker === "yes" },
   { kind: "select", name: "generalHealth", label: "Self-rated general health", options: GENERAL_HEALTH_OPTIONS },
@@ -65,8 +72,7 @@ export const REQUIRED_FIELDS: readonly AssessmentField[] = [
 /** Lower-weight inputs; all optional, blank means "not recorded" (the API imputes and reports it). */
 export const MORE_FIELDS: readonly AssessmentField[] = [
   NUM("waistCm", "Waist (cm)"),
-  NUM("urineAcr", "Urine albumin/creatinine (mg/g)"),
-  NUM("triglycerides", "Triglycerides (mg/dL)"),
+  { ...NUM("urineAcr", "Urine albumin/creatinine (mg/g)"), when: (v) => !isDiabetic(v) },
   NUM("glucose", "Glucose (mg/dL)"),
   NUM("uricAcid", "Uric acid (mg/dL)"),
   NUM("hsCrp", "hs-CRP (mg/L)"),
@@ -86,7 +92,7 @@ export const MORE_FIELDS: readonly AssessmentField[] = [
 export function initialValues(): FormValues {
   const values: FormValues = { heartRate: "", notes: "" };
   for (const f of REQUIRED_FIELDS) values[f.name] = "";
-  for (const f of MORE_FIELDS) values[f.name] = "";
+  for (const f of MORE_FIELDS) values[f.name] ??= "";
   return values;
 }
 
@@ -122,7 +128,7 @@ export function validateAssessment(values: FormValues, age: number | null): Form
 
   for (const field of MORE_FIELDS) {
     const raw = values[field.name];
-    if (field.kind !== "number" || isBlank(raw)) continue;
+    if (field.kind !== "number" || !isShown(field, values) || isBlank(raw)) continue;
     const problem = rangeError(field.label, field.name, raw);
     if (problem) errors[field.name] = problem;
   }
@@ -131,7 +137,9 @@ export function validateAssessment(values: FormValues, age: number | null): Form
     errors.diastolicBp = "Systolic BP must be greater than diastolic BP.";
   }
 
-  if (!isBlank(values.heartRate)) {
+  if (isBlank(values.heartRate)) {
+    errors.heartRate = "Required.";
+  } else {
     const bpm = Number(values.heartRate);
     if (!Number.isInteger(bpm) || bpm < HEART_RATE_MIN || bpm > HEART_RATE_MAX) {
       errors.heartRate = `Heart rate must be a whole number between ${HEART_RATE_MIN} and ${HEART_RATE_MAX} bpm.`;
@@ -145,7 +153,7 @@ type YesNo = "yes" | "no";
 
 const optionalNumber = (raw: string | undefined): number | undefined => (isBlank(raw) ? undefined : Number(raw));
 
-/** Build the API payload from validated form values. Blank optional inputs are omitted; heartRate only when given. */
+/** Build the API payload from validated form values. Blank optional inputs are omitted. */
 export function buildAssessmentPayload(values: FormValues, age: number): RiskAssessmentRequest["payload"] {
   const smoker = values.smoker as YesNo;
   const highBp = values.highBp as YesNo;
@@ -169,7 +177,7 @@ export function buildAssessmentPayload(values: FormValues, age: number): RiskAss
     generalHealth: Number(values.generalHealth),
     waistCm: optionalNumber(values.waistCm),
     urineAcr: optionalNumber(values.urineAcr),
-    triglycerides: optionalNumber(values.triglycerides),
+    triglycerides: Number(values.triglycerides),
     glucose: optionalNumber(values.glucose),
     uricAcid: optionalNumber(values.uricAcid),
     hsCrp: optionalNumber(values.hsCrp),
@@ -186,6 +194,6 @@ export function buildAssessmentPayload(values: FormValues, age: number): RiskAss
     education: optionalNumber(values.education),
     notes: values.notes.trim() === "" ? undefined : values.notes,
   };
-  if (!isBlank(values.heartRate)) payload.heartRate = Number(values.heartRate);
+  payload.heartRate = Number(values.heartRate);
   return payload;
 }

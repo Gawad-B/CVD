@@ -18,7 +18,12 @@ export interface PatientLastAssessment {
   riskLevel: RiskLevel;
   effectiveRiskLevel: RiskLevel;
   reviewStatus: string;
+  levelSource?: LevelSource;
+  preventRisk?: number;
 }
+
+/** What set an assessment's level: clinical alerts, the PREVENT equation, or the ML model. */
+export type LevelSource = "alerts" | "prevent" | "model";
 
 /** "unknown" = the API sent a value this client does not recognise; shown neutrally, never as low. */
 export type RiskLevel = "low" | "medium" | "high" | "unknown";
@@ -116,6 +121,8 @@ export interface RiskAssessment {
   effectiveRiskLevel: RiskLevel;
   effectiveRecommendation: string;
   overrideHistory?: OverrideHistoryEntry[];
+  levelSource?: LevelSource;
+  preventRisk?: number;
 }
 
 export interface OverrideHistoryEntry {

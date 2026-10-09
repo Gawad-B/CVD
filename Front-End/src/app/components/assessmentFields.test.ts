@@ -10,6 +10,7 @@ function filled() {
     highBp: "no",
     totalCholesterol: "190",
     hdl: "52",
+    triglycerides: "140",
     highChol: "no",
     cholMed: "no",
     creatinine: "0.9",
@@ -17,20 +18,29 @@ function filled() {
     diabetic: "no",
     smoker: "no",
     generalHealth: "2",
+    heartRate: "72",
   };
 }
 
-// bpMed and smokesNow only apply when highBp / smoker are "yes".
+// bpMed and smokesNow only apply when highBp / smoker are "yes"; urineAcr only for diabetics.
 const ALWAYS_REQUIRED = [
   "bmi", "cholMed", "creatinine", "diabetic", "diastolicBp", "generalHealth", "hba1cPercent", "hdl",
-  "highBp", "highChol", "smoker", "systolicBp", "totalCholesterol",
+  "highBp", "highChol", "smoker", "systolicBp", "totalCholesterol", "triglycerides",
 ];
 
 describe("assessment fields", () => {
   it("requires the PREVENT and top model inputs and a derivable age", () => {
     const errors = validateAssessment(initialValues(), null);
-    expect(Object.keys(errors).sort()).toEqual(["age", ...ALWAYS_REQUIRED].sort());
-    expect(REQUIRED_FIELDS.map((f) => f.name).sort()).toEqual([...ALWAYS_REQUIRED, "bpMed", "smokesNow"].sort());
+    expect(Object.keys(errors).sort()).toEqual(["age", "heartRate", ...ALWAYS_REQUIRED].sort());
+    expect(REQUIRED_FIELDS.map((f) => f.name).sort()).toEqual([...ALWAYS_REQUIRED, "bpMed", "smokesNow", "urineAcr"].sort());
+  });
+
+  it("requires urine albumin/creatinine for diabetics and keeps it optional otherwise", () => {
+    expect(validateAssessment({ ...filled(), diabetic: "yes" }, 50).urineAcr).toBe("Required.");
+    expect(validateAssessment({ ...filled(), diabetic: "borderline" }, 50).urineAcr).toBeUndefined();
+    const optionalAcr = MORE_FIELDS.find((f) => f.name === "urineAcr")!;
+    expect(isShown(optionalAcr, filled())).toBe(true);
+    expect(isShown(optionalAcr, { ...filled(), diabetic: "yes" })).toBe(false);
   });
 
   it("asks about BP medication and current smoking only when they apply", () => {
@@ -45,7 +55,7 @@ describe("assessment fields", () => {
 
   it("keeps the lower-weight inputs optional", () => {
     const optional = MORE_FIELDS.map((f) => f.name);
-    for (const name of ["waistCm", "urineAcr", "triglycerides", "hsCrp", "sodium", "race", "education"]) {
+    for (const name of ["waistCm", "urineAcr", "glucose", "hsCrp", "sodium", "race", "education"]) {
       expect(optional).toContain(name);
     }
     expect(validateAssessment(filled(), 50)).toEqual({});
@@ -59,8 +69,8 @@ describe("assessment fields", () => {
     expect(validateAssessment({ ...filled(), systolicBp: "80", diastolicBp: "90" }, 50).diastolicBp).toMatch(/greater than/);
   });
 
-  it("validates heart rate as an integer 30-220 only when provided", () => {
-    expect(validateAssessment(filled(), 50).heartRate).toBeUndefined();
+  it("requires heart rate as an integer 30-220", () => {
+    expect(validateAssessment({ ...filled(), heartRate: "" }, 50).heartRate).toBe("Required.");
     for (const bad of ["29", "221", "72.5", "abc"]) {
       expect(validateAssessment({ ...filled(), heartRate: bad }, 50).heartRate).toMatch(/whole number between 30 and 220/);
     }
@@ -69,7 +79,6 @@ describe("assessment fields", () => {
 
   it("answers skipped questions, omits blank optional inputs, and sends heartRate as an integer", () => {
     const payload = buildAssessmentPayload(filled(), 50);
-    expect(payload).not.toHaveProperty("heartRate");
     expect(JSON.parse(JSON.stringify(payload))).toEqual({
       age: 50,
       bmi: 27.5,
@@ -79,6 +88,7 @@ describe("assessment fields", () => {
       bpMed: "no",
       totalCholesterol: 190,
       hdl: 52,
+      triglycerides: 140,
       highChol: "no",
       cholMed: "no",
       creatinine: 0.9,
@@ -87,6 +97,7 @@ describe("assessment fields", () => {
       smoker: "no",
       smokesNow: "no",
       generalHealth: 2,
+      heartRate: 72,
     });
     const withOptional = buildAssessmentPayload(
       { ...filled(), heartRate: "72", highBp: "yes", bpMed: "yes", smoker: "yes", smokesNow: "yes", urineAcr: "40", race: "3" },

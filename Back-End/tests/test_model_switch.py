@@ -105,3 +105,17 @@ def test_prevent_lifts_a_low_mortality_score(client, admin, make_patient):
     assert body["modelRiskLevel"] == "low"
     assert body["prevent"]["category"] in ("borderline", "intermediate", "high")
     assert body["riskSource"] == "prevent" and body["baseRiskLevel"] in ("medium", "high")
+    listed = client.get("/api/patients", headers=admin).json()
+    last = next(p for p in listed if p["patient_id"] == pid)["last_assessment"]
+    assert last["level_source"] == "prevent" and last["prevent_risk"] == pytest.approx(body["prevent"]["risk"])
+
+
+@pytest.mark.nodb
+def test_level_driver_names_what_set_the_level():
+    from app import level_driver
+
+    prevent = {"available": True, "risk": 0.11}
+    assert level_driver({"baseRiskLevel": "medium", "riskSource": "prevent", "prevent": prevent}, "high") == \
+        {"level_source": "alerts", "prevent_risk": 0.11}
+    assert level_driver({"baseRiskLevel": "medium", "riskSource": "prevent", "prevent": prevent}, "medium")["level_source"] == "prevent"
+    assert level_driver(None, "low") == {"level_source": None, "prevent_risk": None}

@@ -800,6 +800,20 @@ def fallback_risk_classification(probability: float, model_key: str = inference.
     return {"risk_level": level, "recommendation": RECOMMENDATION_BY_LEVEL[level]}
 
 
+def level_driver(explanation: Optional[Dict[str, Any]], risk_level: Optional[str]) -> Dict[str, Any]:
+    """What set an assessment's level, so lists can show the score behind the badge."""
+    explanation = explanation or {}
+    base = explanation.get("baseRiskLevel")
+    prevent_result = explanation.get("prevent") or {}
+    prevent_risk = prevent_result.get("risk") if prevent_result.get("available") else None
+    if base in clinical_alerts.RISK_ORDER and risk_level in clinical_alerts.RISK_ORDER \
+            and clinical_alerts.RISK_ORDER[risk_level] > clinical_alerts.RISK_ORDER[base]:
+        source = "alerts"
+    else:
+        source = explanation.get("riskSource")
+    return {"level_source": source, "prevent_risk": prevent_risk}
+
+
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, request: Request, db: Any = Depends(get_db)) -> Dict[str, Any]:
     ip_address = client_ip(request)
@@ -984,12 +998,13 @@ def get_patients(
                    {psd_cols},
                    la.assessment_id AS last_assessment_id, la.created_at AS last_created_at,
                    la.probability AS last_probability, la.risk_level AS last_risk_level,
-                   la.override_risk_level AS last_override_risk_level, la.review_status AS last_review_status
+                   la.override_risk_level AS last_override_risk_level, la.review_status AS last_review_status,
+                   la.explanation_json AS last_explanation
             FROM patients p
             LEFT JOIN patient_sensitive_data psd ON psd.patient_id = p.id
             LEFT JOIN LATERAL (
                 SELECT ra.id AS assessment_id, ra.created_at, ra.probability, ra.risk_level,
-                       ra.override_risk_level, ra.review_status
+                       ra.override_risk_level, ra.review_status, ra.explanation_json
                 FROM risk_assessments ra
                 WHERE ra.patient_id = p.id AND ra.deleted_at IS NULL
                 ORDER BY ra.created_at DESC, ra.id DESC
@@ -1021,6 +1036,7 @@ def get_patients(
                 "risk_level": p["last_risk_level"],
                 "effective_risk_level": p["last_override_risk_level"] or p["last_risk_level"],
                 "review_status": p["last_review_status"] or "pending",
+                **level_driver(p["last_explanation"], p["last_risk_level"]),
             },
         }
         for p in patients
@@ -1456,7 +1472,7 @@ def get_risk_assessments(
             """
             SELECT ra.id AS assessment_id, ra.patient_id, ra.encounter_id, ra.model_id,
                    ra.probability AS probability_cvd, ra.risk_level, ra.assessment_status, ra.review_status,
-                   ra.recommendation AS recommendation_text, ra.notes, ra.created_at,
+                   ra.recommendation AS recommendation_text, ra.notes, ra.created_at, ra.explanation_json,
                    ra.reviewed_at, ra.review_comment, ru.username AS reviewed_by_username,
                    p.external_patient_code, p.sex AS patient_sex, {psd_cols}, {override_cols},
                    m.name AS model_name, m.version AS model_version
@@ -1502,6 +1518,7 @@ def get_risk_assessments(
             "reviewed_at": to_iso(assessment["reviewed_at"]),
             "review_comment": assessment["review_comment"],
             **clinical.serialize_override(assessment, to_iso),
+            **level_driver(assessment["explanation_json"], assessment["risk_level"]),
         }
         for assessment in assessments
     ]
@@ -1627,7 +1644,7 @@ def get_patient_risk_assessments(
             """
             SELECT ra.id AS assessment_id, ra.patient_id, ra.encounter_id, ra.model_id,
                    ra.probability AS probability_cvd, ra.risk_level, ra.assessment_status, ra.review_status,
-                   ra.recommendation AS recommendation_text, ra.notes, ra.created_at,
+                   ra.recommendation AS recommendation_text, ra.notes, ra.created_at, ra.explanation_json,
                    ra.reviewed_at, ra.review_comment, ru.username AS reviewed_by_username,
                    {override_cols},
                    m.name AS model_name, m.version AS model_version
@@ -1664,6 +1681,7 @@ def get_patient_risk_assessments(
             "reviewed_at": to_iso(assessment["reviewed_at"]),
             "review_comment": assessment["review_comment"],
             **clinical.serialize_override(assessment, to_iso),
+            **level_driver(assessment["explanation_json"], assessment["risk_level"]),
         }
         for assessment in assessments
     ]

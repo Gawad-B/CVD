@@ -78,7 +78,7 @@ describe("RiskAssessmentDetails", () => {
   it("shows model vs effective risk, the override history timeline and original recommendation", async () => {
     renderPage();
     expect(await screen.findByRole("heading", { name: "Marisol Quill" })).toBeInTheDocument();
-    expect(screen.getByText("42.0%")).toBeInTheDocument();
+    expect(screen.getByText("42%")).toBeInTheDocument();
     expect(screen.getByText("medium risk")).toHaveAttribute("data-variant", "medium");
     expect(screen.getAllByText("high risk")[0]).toHaveAttribute("data-variant", "high");
 

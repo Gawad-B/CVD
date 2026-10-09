@@ -144,7 +144,7 @@ describe("Dashboard", () => {
     await user.click(screen.getByRole("button", { name: /Alder Fennimore/ }));
     await waitFor(() => expect(screen.getByTestId("heart3d")).toHaveAttribute("data-risk", "high"));
     expect(screen.getByTestId("loc")).toHaveTextContent("/dashboard?assessment=2");
-    expect(screen.getByText("81.0%")).toBeInTheDocument();
+    expect(screen.getAllByText("81%").length).toBeGreaterThan(0);
   });
 
   it("preselects ?assessment=<id>", async () => {
