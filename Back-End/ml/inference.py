@@ -154,26 +154,77 @@ def missing_inputs(raw_row: Dict[str, Any]) -> List[str]:
     return [column for column in RAW_COLUMNS if _is_missing(raw_row.get(column))]
 
 
-def _model_dir() -> Path:
-    return Path(os.getenv("MODEL_DIR") or (Path(__file__).resolve().parent.parent / "model"))
+# Installed models: key -> sub-folder of the model directory and how the app should use the score.
+# "prospective" models predict future events (inputs measured before the outcome), so their score can
+# set the risk level; cross-sectional ones recognise existing disease and defer to AHA PREVENT.
+# "age_range" is the age span of the training data; ages outside it are capped to it when scoring.
+MODELS: Dict[str, Dict[str, Any]] = {
+    "nhanes_cross_sectional": {
+        "folder": "", "prospective": False, "age_range": (20, 80),
+        "score_meaning": "probability of already-diagnosed CVD",
+        "caveat": ("Shows how closely the profile resembles people already diagnosed with CVD. It is not a "
+                   "future risk; use the AHA PREVENT 10-year risk for that."),
+    },
+    "nhanes_mortality": {
+        "folder": "mortality", "prospective": True, "age_range": (20, 85),
+        "score_meaning": "10-year probability of cardiovascular death",
+        "caveat": ("Long-term risk for adults without existing CVD. It does not detect current disease or "
+                   "short-term danger, and it counts deaths only, not survived heart attacks or strokes."),
+    },
+}
+DEFAULT_MODEL_KEY = "nhanes_cross_sectional"
 
 
-@lru_cache(maxsize=1)
-def get_model() -> Any:
+def _model_dir(key: str = DEFAULT_MODEL_KEY) -> Path:
+    base = Path(os.getenv("MODEL_DIR") or (Path(__file__).resolve().parent.parent / "model"))
+    return base / MODELS[key]["folder"]
+
+
+def available_model_keys() -> List[str]:
+    """Models whose artifacts are present (the default model is always listed first)."""
+    return [key for key in MODELS if (_model_dir(key) / "cvd_pipeline.joblib").exists()]
+
+
+def is_prospective(key: str) -> bool:
+    return bool(MODELS.get(key, {}).get("prospective"))
+
+
+def model_description(key: str) -> Dict[str, Any]:
+    """What the model's score means, its caveat and the age span it was trained on."""
+    config = MODELS.get(key, {})
+    low, high = config.get("age_range", (None, None))
+    return {"score_meaning": config.get("score_meaning"), "caveat": config.get("caveat"),
+            "age_min": low, "age_max": high}
+
+
+@lru_cache(maxsize=None)
+def _load_model(key: str) -> Any:
     import_lightgbm()  # load the vendored libgomp first in case the pipeline holds a LightGBM model
-    return joblib.load(_model_dir() / "cvd_pipeline.joblib")
+    model = joblib.load(_model_dir(key) / "cvd_pipeline.joblib")
+    features = model.named_steps.get("features") if hasattr(model, "named_steps") else None
+    if features is not None:
+        # Score ages outside the training data as the nearest trained age (NHANES top-codes age).
+        features.age_min, features.age_max = MODELS[key]["age_range"]
+    return model
 
 
-@lru_cache(maxsize=1)
-def get_schema() -> Dict[str, Any]:
-    with (_model_dir() / "feature_schema.json").open("r", encoding="utf-8") as handle:
+@lru_cache(maxsize=None)
+def _load_json(key: str, name: str) -> Dict[str, Any]:
+    with (_model_dir(key) / name).open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
-@lru_cache(maxsize=1)
-def get_metrics() -> Dict[str, Any]:
-    with (_model_dir() / "metrics_ml.json").open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+# Public loaders: one cached object per model, however the key is passed.
+def get_model(key: str = DEFAULT_MODEL_KEY) -> Any:
+    return _load_model(key)
+
+
+def get_schema(key: str = DEFAULT_MODEL_KEY) -> Dict[str, Any]:
+    return _load_json(key, "feature_schema.json")
+
+
+def get_metrics(key: str = DEFAULT_MODEL_KEY) -> Dict[str, Any]:
+    return _load_json(key, "metrics_ml.json")
 
 
 def to_frame(rows: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -183,5 +234,5 @@ def to_frame(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     return frame.apply(pd.to_numeric, errors="coerce")
 
 
-def predict_probability(raw_row: Dict[str, Any]) -> float:
-    return float(get_model().predict_proba(to_frame([raw_row]))[0][1])
+def predict_probability(raw_row: Dict[str, Any], key: str = DEFAULT_MODEL_KEY) -> float:
+    return float(get_model(key).predict_proba(to_frame([raw_row]))[0][1])

@@ -78,7 +78,9 @@ export function ModelSection() {
             </h2>
             <p className="mt-3.5 max-w-[46ch] text-[15.5px] leading-[1.6] text-[#b9c5dc]">
               The AHA PREVENT equations estimate each patient&apos;s 10-year cardiovascular risk, alongside a model trained on{" "}
-              {MODEL_FACTS.patients} NHANES 2021–2023 adults and guideline alerts for dangerous readings. Decision support, not a diagnosis.
+              {MODEL_FACTS.patients} NHANES 2021–2023 adults and guideline alerts for dangerous readings. A second, switchable model
+              estimates the 10-year risk of cardiovascular death from {MODEL_FACTS.mortalityPatients} adults followed for up to 20 years.
+              Long-term risk for prevention: it does not detect current disease or short-term danger, and it is not a diagnosis.
             </p>
           </div>
           <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-3">

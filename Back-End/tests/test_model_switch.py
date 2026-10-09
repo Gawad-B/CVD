@@ -1,0 +1,90 @@
+"""Two installed models (cross-sectional NHANES 2021-2023, 10-year CVD death) and switching between them."""
+import pytest
+
+from ml import inference
+
+MORTALITY = "CVD 10-year Mortality Logistic"
+CROSS_SECTIONAL = "CVD NHANES Logistic"
+
+pytestmark = pytest.mark.skipif(
+    "nhanes_mortality" not in inference.available_model_keys(), reason="mortality model artifacts not built"
+)
+
+PAYLOAD = {"age": 62, "bmi": 29, "systolicBp": 150, "diastolicBp": 85, "totalCholesterol": 230, "hdl": 40,
+           "creatinine": 1.0, "diabetic": "no", "smoker": "yes", "smokesNow": "yes", "highBp": "yes",
+           "bpMed": "yes", "highChol": "yes", "cholMed": "no", "hba1cPercent": 5.8, "generalHealth": 3}
+
+
+@pytest.fixture
+def admin(make_user, auth_headers):
+    return auth_headers(make_user(role="admin"))
+
+
+def _models(client, headers):
+    response = client.get("/api/models", headers=headers)
+    assert response.status_code == 200, response.text
+    return {m["model_name"]: m for m in response.json()}
+
+
+def test_both_models_are_listed_and_the_default_is_active(client, admin):
+    models = _models(client, admin)
+    assert models[CROSS_SECTIONAL]["status"] == "active"
+    assert models[MORTALITY]["status"] == "available"
+    assert models[MORTALITY]["metrics"]["score_meaning"] == "10-year probability of cardiovascular death"
+    assert models[MORTALITY]["metrics"]["age_max"] == 85 and models[CROSS_SECTIONAL]["metrics"]["age_max"] == 80
+    assert sum(m["is_active"] for m in models.values()) == 1
+
+
+def test_admin_switches_model_and_new_assessments_use_it(client, admin, make_patient):
+    pid = make_patient(admin)["patient_id"]
+    before = client.post("/api/risk-assessments", json={"patientId": pid, **PAYLOAD}, headers=admin).json()
+    assert before["modelName"] == CROSS_SECTIONAL and before["riskSource"] == "prevent"
+
+    target = _models(client, admin)[MORTALITY]["model_id"]
+    response = client.post(f"/api/models/{target}/activate", headers=admin)
+    assert response.status_code == 200, response.text
+    models = _models(client, admin)
+    assert models[MORTALITY]["is_active"] and not models[CROSS_SECTIONAL]["is_active"]
+
+    after = client.post("/api/risk-assessments", json={"patientId": pid, **PAYLOAD}, headers=admin).json()
+    assert after["modelName"] == MORTALITY
+    assert after["scoreMeaning"] == "10-year probability of cardiovascular death"
+    assert "does not detect current disease" in after["scoreCaveat"]
+    assert after["riskSource"] == "model"  # a prospective model sets the level itself
+    assert after["prevent"]["available"] is True  # PREVENT is still shown for reference
+    assert "SLD012" not in after["missingInputs"]  # sleep is not an input of this model
+
+
+def test_admin_choice_survives_a_new_process(client, admin):
+    import app as app_module
+
+    target = _models(client, admin)[MORTALITY]["model_id"]
+    assert client.post(f"/api/models/{target}/activate", headers=admin).status_code == 200
+    app_module._MODEL_REGISTRY_READY = False  # simulate a fresh serverless instance
+    assert _models(client, admin)[MORTALITY]["is_active"]
+
+
+def test_doctors_cannot_switch(client, make_user, auth_headers, admin):
+    doctor = auth_headers(make_user(role="doctor"))
+    target = _models(client, admin)[MORTALITY]["model_id"]
+    assert client.post(f"/api/models/{target}/activate", headers=doctor).status_code == 403
+
+
+def test_models_that_are_not_installed_cannot_be_activated(client, admin, db):
+    with db.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO model_registry (name, version, status, artifact_uri) VALUES ('Old', '0.1', 'retired', NULL) RETURNING id"
+        )
+        old_id = cursor.fetchone()["id"]
+    db.commit()
+    assert client.post(f"/api/models/{old_id}/activate", headers=admin).status_code == 409
+    assert client.post("/api/models/999999/activate", headers=admin).status_code == 404
+
+
+@pytest.mark.nodb
+def test_mortality_model_rises_with_blood_pressure_and_cholesterol():
+    base = {"age": 60, "bmi": 28, "dbp": 80, "hdl": 50, "creatinine": 0.9, "smoker": "no", "diabetic": "no",
+            "high_bp": "no", "high_chol": "no", "chol_med": "no", "general_health": 3}
+    low = inference.predict_probability(inference.build_raw_row({**base, "sbp": 118, "total_cholesterol": 170}, "male"), "nhanes_mortality")
+    high = inference.predict_probability(inference.build_raw_row({**base, "sbp": 175, "total_cholesterol": 290}, "male"), "nhanes_mortality")
+    assert high > low

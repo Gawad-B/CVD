@@ -10,6 +10,10 @@ reason rather than an extrapolated number.
 import math
 from typing import Any, Dict, Optional
 
+import pandas as pd
+
+from ml.nhanes import ckd_epi_2021
+
 MG_DL_TO_MMOL_L = 0.02586
 
 # model -> sex -> (22 term coefficients, extra-term coefficients, constant). Term order:
@@ -98,7 +102,10 @@ def ten_year_cvd(
     out = [f"{_LABELS[k]} {values[k]:g} (valid {lo:g}-{hi:g})" for k, (lo, hi) in RANGES.items()
            if values[k] is not None and not _in_range(values[k], (lo, hi))]
     if out:
-        return {"available": False, "reason": "Outside the PREVENT validated range: " + "; ".join(out) + "."}
+        result = {"available": False, "reason": "Outside the PREVENT validated range: " + "; ".join(out) + "."}
+        if age is not None and not _in_range(age, RANGES["age"]):
+            result["ageOutOfRange"] = True  # no validated 10-year equation exists for this age
+        return result
     missing = [_LABELS[k] for k, v in {**values, **flags}.items() if v is None]
     if missing:
         return {"available": False, "reason": "Missing " + ", ".join(missing) + "."}
@@ -138,3 +145,121 @@ def ten_year_cvd(
     x = constant + sum(b * t for b, t in zip(betas, terms)) + sum(b * extra[k] for k, b in extra_betas.items())
     risk = math.exp(x) / (1 + math.exp(x))
     return {"available": True, "risk": risk, "category": category(risk), "model": model}
+
+
+def _value(row: Dict[str, Any], column: str) -> Optional[float]:
+    value = row.get(column)
+    if value is None:
+        return None
+    value = float(value)
+    return None if math.isnan(value) else value
+
+
+def from_raw(row: Dict[str, Any]) -> Dict[str, Any]:
+    """PREVENT from a raw NHANES-coded row (ml.inference.build_raw_row / the NHANES datasets)."""
+    age, sex_code = _value(row, "RIDAGEYR"), _value(row, "RIAGENDR")
+    sex = {1.0: "male", 2.0: "female"}.get(sex_code)
+    creatinine = _value(row, "LBXSCR")
+    egfr = None
+    if creatinine is not None and age is not None and sex is not None:
+        egfr = float(ckd_epi_2021(pd.Series([creatinine]), pd.Series([age]),
+                                  pd.Series([1.0 if sex == "male" else 0.0])).iloc[0])
+    yes = lambda column: {1.0: True, 2.0: False}.get(_value(row, column))  # noqa: E731
+    smoking = {1.0: True, 2.0: True, 3.0: False}.get(_value(row, "SMQ040"))
+    if smoking is None and yes("SMQ020") is False:
+        smoking = False
+    bp_tx = yes("BPQ150")
+    if bp_tx is None and yes("BPQ020") is False:
+        bp_tx = False
+    diabetes = {1.0: True, 2.0: False, 3.0: False}.get(_value(row, "DIQ010"))
+    inputs = dict(
+        age=age, sex=sex, total_chol=_value(row, "LBXTC"), hdl=_value(row, "LBDHDD"), sbp=_value(row, "BPXOSY1"),
+        diabetes=diabetes, smoking=smoking, bmi=_value(row, "BMXBMI"), egfr=egfr, bp_tx=bp_tx,
+        statin=yes("BPQ101D"), hba1c=_value(row, "LBXGH"), uacr=_value(row, "URDACT"),
+    )
+    result = ten_year_cvd(**inputs)
+    if result["available"]:
+        result = {**result, "risk": round(result["risk"], 4), "egfr": round(egfr, 1)}
+        if THIRTY_YEAR_AGES[0] <= age <= THIRTY_YEAR_AGES[1]:
+            thirty = thirty_year_cvd(**inputs)
+            result.update(risk30=round(thirty["risk"], 4), model30=thirty["model"])
+    return result
+
+
+# --- 30-year total CVD ------------------------------------------------------------------------
+# Published 30-year total-CVD equations (same paper), cross-checked against preventr and
+# PooledCohort; they add an age-squared term. The authors recommend 30-year estimates for ages
+# 30-59 only (preventr warns above 59), so the app shows them only in that range.
+THIRTY_YEAR_AGES = (30, 59)
+
+_COEF_30: Dict[str, Dict[str, Dict[str, float]]] = {
+    "base": {
+        "female": dict(age=0.5503079, age_sq=-0.0928369, non_hdl=0.0409794, hdl=-0.1663306, sbp_lt_110=-0.1628654,
+                       sbp_gte_110=0.3299505, dm=0.6793894, smoking=0.3196112, egfr_lt_60=0.1857101,
+                       egfr_gte_60=0.0553528, bp_tx=0.2894, statin=-0.075688, bp_tx_sbp=-0.056367,
+                       statin_non_hdl=0.1071019, age_non_hdl=-0.0751438, age_hdl=0.0301786, age_sbp=-0.0998776,
+                       age_dm=-0.3206166, age_smoking=-0.1607862, age_egfr_lt_60=-0.1450788, constant=-1.318827),
+        "male": dict(age=0.4627309, age_sq=-0.0984281, non_hdl=0.0836088, hdl=-0.1029824, sbp_lt_110=-0.2140352,
+                     sbp_gte_110=0.2904325, dm=0.5331276, smoking=0.2141914, egfr_lt_60=0.1155556,
+                     egfr_gte_60=0.0603775, bp_tx=0.232714, statin=-0.0272112, bp_tx_sbp=-0.0384488,
+                     statin_non_hdl=0.134192, age_non_hdl=-0.0511759, age_hdl=0.0165865, age_sbp=-0.1101437,
+                     age_dm=-0.2585943, age_smoking=-0.1566406, age_egfr_lt_60=-0.1166776, constant=-1.148204),
+    },
+    "uacr": {
+        "female": dict(age=0.5491768, age_sq=-0.0937311, non_hdl=0.0359847, hdl=-0.1642965, sbp_lt_110=-0.1483404,
+                       sbp_gte_110=0.313353, dm=0.6253766, smoking=0.3147172, egfr_lt_60=0.1094663,
+                       egfr_gte_60=0.0550705, bp_tx=0.2782433, statin=-0.0786239, bp_tx_sbp=-0.0628947,
+                       statin_non_hdl=0.093204, age_non_hdl=-0.0710685, age_hdl=0.0306363, age_sbp=-0.0951455,
+                       age_dm=-0.3168231, age_smoking=-0.1636391, age_egfr_lt_60=-0.1265483,
+                       ln_uacr=0.1142251, missing_uacr=-0.0055863, constant=-1.583738),
+        "male": dict(age=0.464491, age_sq=-0.0998895, non_hdl=0.0757606, hdl=-0.1031778, sbp_lt_110=-0.1990714,
+                     sbp_gte_110=0.2715816, dm=0.4754637, smoking=0.2069672, egfr_lt_60=0.0331103,
+                     egfr_gte_60=0.0540474, bp_tx=0.2189911, statin=-0.0331044, bp_tx_sbp=-0.04534,
+                     statin_non_hdl=0.1214535, age_non_hdl=-0.0483995, age_hdl=0.0178997, age_sbp=-0.1059324,
+                     age_dm=-0.2492861, age_smoking=-0.1561543, age_egfr_lt_60=-0.1012429,
+                     ln_uacr=0.1007571, missing_uacr=0.0572456, constant=-1.398727),
+    },
+    "hba1c": {
+        "female": dict(age=0.5343493, age_sq=-0.0952314, non_hdl=0.0298124, hdl=-0.1578451, sbp_lt_110=-0.1504488,
+                       sbp_gte_110=0.3173368, dm=0.4314738, smoking=0.3209399, egfr_lt_60=0.1771435,
+                       egfr_gte_60=0.0582828, bp_tx=0.2888947, statin=-0.0795886, bp_tx_sbp=-0.0600438,
+                       statin_non_hdl=0.0920598, age_non_hdl=-0.0696108, age_hdl=0.0308807, age_sbp=-0.0954051,
+                       age_dm=-0.2763408, age_smoking=-0.1623944, age_egfr_lt_60=-0.1430514,
+                       hba1c_dm=0.0940543, hba1c_no_dm=0.1116486, missing_hba1c=-0.0024798, constant=-1.341059),
+        "male": dict(age=0.4519873, age_sq=-0.101624, non_hdl=0.0700456, hdl=-0.0968005, sbp_lt_110=-0.1923527,
+                     sbp_gte_110=0.2827043, dm=0.3417152, smoking=0.2105272, egfr_lt_60=0.1113291,
+                     egfr_gte_60=0.0640135, bp_tx=0.2334248, statin=-0.0299421, bp_tx_sbp=-0.0393204,
+                     statin_non_hdl=0.1228854, age_non_hdl=-0.0463737, age_hdl=0.0184599, age_sbp=-0.1085744,
+                     age_dm=-0.2208049, age_smoking=-0.1577978, age_egfr_lt_60=-0.1179375,
+                     hba1c_dm=0.0768169, hba1c_no_dm=0.0777295, missing_hba1c=0.0092204, constant=-1.180767),
+    },
+}
+
+
+def thirty_year_cvd(
+    *, age: float, sex: str, total_chol: float, hdl: float, sbp: float, diabetes: bool, smoking: bool,
+    bmi: float, egfr: float, bp_tx: bool, statin: bool, hba1c: Optional[float] = None, uacr: Optional[float] = None,
+) -> Dict[str, Any]:
+    """30-year total CVD risk (0-1). Call only with inputs that already passed ten_year_cvd's checks."""
+    hba1c = hba1c if _in_range(hba1c, OPTIONAL_RANGES["hba1c"]) else None
+    uacr = uacr if _in_range(uacr, OPTIONAL_RANGES["uacr"]) else None
+    # No 30-year model with both optional terms is used here: HbA1c takes precedence over UACR.
+    model = "hba1c" if hba1c is not None else "uacr" if uacr is not None else "base"
+    a = (age - 55) / 10
+    non_hdl = (total_chol - hdl) * MG_DL_TO_MMOL_L - 3.5
+    h = (hdl * MG_DL_TO_MMOL_L - 1.3) / 0.3
+    sbp_hi = (max(sbp, 110) - 130) / 20
+    egfr_lo = (min(egfr, 60) - 60) / -15
+    dm, smk, bp, st = float(diabetes), float(smoking), float(bp_tx), float(statin)
+    terms = dict(
+        age=a, age_sq=a * a, non_hdl=non_hdl, hdl=h, sbp_lt_110=(min(sbp, 110) - 110) / 20, sbp_gte_110=sbp_hi,
+        dm=dm, smoking=smk, egfr_lt_60=egfr_lo, egfr_gte_60=(max(egfr, 60) - 90) / -15, bp_tx=bp, statin=st,
+        bp_tx_sbp=bp * sbp_hi, statin_non_hdl=st * non_hdl, age_non_hdl=a * non_hdl, age_hdl=a * h,
+        age_sbp=a * sbp_hi, age_dm=a * dm, age_smoking=a * smk, age_egfr_lt_60=a * egfr_lo, constant=1.0,
+        ln_uacr=math.log(uacr) if uacr is not None else 0.0, missing_uacr=0.0 if uacr is not None else 1.0,
+        hba1c_dm=(hba1c - 5.3) * dm if hba1c is not None else 0.0,
+        hba1c_no_dm=(hba1c - 5.3) * (1 - dm) if hba1c is not None else 0.0,
+        missing_hba1c=0.0 if hba1c is not None else 1.0,
+    )
+    x = sum(beta * terms[name] for name, beta in _COEF_30[model][sex].items())
+    return {"risk": math.exp(x) / (1 + math.exp(x)), "model": model}

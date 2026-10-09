@@ -3,6 +3,7 @@ import { Activity } from "lucide-react";
 import { EcgStrip, HeartCredit, LazyHeart3D, RISK_TONE, heartRateDisplay } from "../../heart";
 import { RISK_LABEL, formatDate, isOverridden } from "./logic";
 import type { RiskAssessment } from "../../api/types";
+import { scoreCaveat } from "../clinicalConstants";
 
 interface Props {
   assessment: RiskAssessment;
@@ -115,7 +116,7 @@ export function HeartStage({ assessment, code, meta }: Props) {
         <p className="text-[11.5px] text-[#5b6b85]">
           {measured ? null : <span className="font-semibold">Illustration of risk level — not patient data</span>}
           {measured ? null : <br />}
-          Decision support only. The ML score is the chance of already-diagnosed CVD, not a 10-year risk.
+          {`Decision support only. ${scoreCaveat(assessment.explanation?.scoreCaveat)}`}
         </p>
         <HeartCredit />
       </div>

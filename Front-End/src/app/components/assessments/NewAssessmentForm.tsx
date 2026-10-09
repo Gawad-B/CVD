@@ -21,7 +21,7 @@ import {
 } from "../assessmentFields";
 import { ClinicalAlerts } from "../ClinicalAlerts";
 import { PreventRisk } from "../PreventRisk";
-import { ALL_FEATURE_LABELS, INPUT_RANGES, SCORE_DISCLAIMER } from "../clinicalConstants";
+import { ALL_FEATURE_LABELS, INPUT_RANGES, scoreCaveat } from "../clinicalConstants";
 import { ageFromDob } from "../dateOfBirth";
 
 interface Props {
@@ -53,12 +53,15 @@ function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale:
           <p className="text-[30px] font-bold leading-tight tracking-[-0.02em] tabular-nums text-[#0b1530]">
             {Math.round(result.probability * 100)}%
           </p>
+          {result.scoreMeaning && (
+            <p className="text-[12px] text-[#5b6b85]">{`${result.modelName ? `${result.modelName}: ` : ""}${result.scoreMeaning}`}</p>
+          )}
         </div>
         <Badge variant={riskVariant(level)} className="capitalize">
           {level} risk
         </Badge>
       </div>
-      <PreventRisk prevent={result.prevent} className="mt-3" />
+      <PreventRisk prevent={result.prevent} alerts={result.clinicalAlerts ?? []} className="mt-3" />
       <ClinicalAlerts
         alerts={result.clinicalAlerts ?? []}
         baseRiskLevel={result.baseRiskLevel ?? result.modelRiskLevel}
@@ -72,7 +75,7 @@ function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale:
           Some inputs were not recorded and were estimated from population medians: {missing.join(", ")}.
         </p>
       )}
-      <p className="mt-3 text-[12px] text-[#5b6b85]">Decision support only. {SCORE_DISCLAIMER}</p>
+      <p className="mt-3 text-[12px] text-[#5b6b85]">Decision support only. {scoreCaveat(result.scoreCaveat)}</p>
       <Link to={target} className={buttonClasses("primary", "md", "mt-4")}>
         View heart on dashboard
       </Link>

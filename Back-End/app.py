@@ -10,7 +10,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
-import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -28,7 +27,7 @@ from db_url import app_database_url  # noqa: E402
 from ml import explain as explain_module  # noqa: E402
 from ml import inference  # noqa: E402
 from ml import prevent  # noqa: E402
-from ml.nhanes import RAW_NUMERIC_COLUMNS, ckd_epi_2021  # noqa: E402
+from ml.nhanes import RAW_NUMERIC_COLUMNS  # noqa: E402
 from phi_crypto import PhiDecryptionError, decrypt_text, encrypt_text, load_key, phi_aad  # noqa: E402
 import clinical  # noqa: E402
 import clinical_alerts  # noqa: E402
@@ -50,14 +49,15 @@ LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
 PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "600000"))
 
 
-def _risk_band(env_name: str, metrics_key: str, default: float) -> float:
-    """ML score band edge: env override, else the notebook's data-derived band (metrics_ml.json)."""
+def _risk_band(env_name: str, metrics_key: str, default: float, model_key: str = inference.DEFAULT_MODEL_KEY) -> float:
+    """ML score band edge: env override, else the model's notebook-derived band (metrics_ml.json)."""
     if os.getenv(env_name):
         return float(os.environ[env_name])
-    return float(inference.get_metrics().get("risk_bands", {}).get(metrics_key, default))
+    return float(inference.get_metrics(model_key).get("risk_bands", {}).get(metrics_key, default))
 
 
-# Low below the screening threshold (>= 90% sensitivity), high from the 90%-specificity threshold.
+# Default-model bands (also used to seed cds_rules): low below the screening threshold, high from the
+# 90%-specificity threshold. Each model's own bands are applied when it is active.
 LOW_RISK_MAX_PROBABILITY = _risk_band("LOW_RISK_MAX_PROBABILITY", "low_max", 0.30)
 MEDIUM_RISK_MAX_PROBABILITY = _risk_band("MEDIUM_RISK_MAX_PROBABILITY", "medium_max", 0.70)
 
@@ -674,53 +674,69 @@ _MODEL_REGISTRY_READY = False
 
 
 def ensure_active_model_registry_entry(db: Any) -> None:
-    """Upsert the deployed pipeline as the single active model (at most once per process)."""
+    """Register every installed model (at most once per process).
+
+    Metrics are refreshed, but an admin's choice of active model is kept: the default model is
+    activated only when no installed model is active. Rows of models that are no longer installed
+    (older versions) are retired.
+    """
     global _MODEL_REGISTRY_READY
     if _MODEL_REGISTRY_READY:
         return
-    schema = inference.get_schema()
-    metrics = inference.get_metrics()
-    name = schema["model_name"]
-    version = schema["model_version"]
+    keys = inference.available_model_keys()
     with db.cursor() as cursor:
-        cursor.execute(
-            """
-            INSERT INTO model_registry (
-                name, version, status, algorithm, use_case,
-                accuracy, auc, precision_score, recall_score, f1_score,
-                training_data_size, validation_metrics
+        for key in keys:
+            schema, metrics = inference.get_schema(key), inference.get_metrics(key)
+            cursor.execute(
+                """
+                INSERT INTO model_registry (
+                    name, version, status, algorithm, use_case, description, artifact_uri,
+                    accuracy, auc, precision_score, recall_score, f1_score,
+                    training_data_size, validation_metrics
+                )
+                VALUES (%s, %s, 'available', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (name, version)
+                DO UPDATE SET
+                    algorithm = EXCLUDED.algorithm,
+                    use_case = EXCLUDED.use_case,
+                    description = EXCLUDED.description,
+                    artifact_uri = EXCLUDED.artifact_uri,
+                    status = CASE WHEN model_registry.status = 'retired' THEN 'available' ELSE model_registry.status END,
+                    accuracy = EXCLUDED.accuracy,
+                    auc = EXCLUDED.auc,
+                    precision_score = EXCLUDED.precision_score,
+                    recall_score = EXCLUDED.recall_score,
+                    f1_score = EXCLUDED.f1_score,
+                    training_data_size = EXCLUDED.training_data_size,
+                    validation_metrics = EXCLUDED.validation_metrics
+                """,
+                (
+                    schema["model_name"],
+                    schema["model_version"],
+                    "logistic_regression",
+                    "cardiovascular_death_10y" if inference.is_prospective(key) else "cardiovascular_disease_risk",
+                    metrics.get("label"),
+                    key,
+                    metrics.get("accuracy"),
+                    metrics.get("auc"),
+                    metrics.get("precision"),
+                    metrics.get("recall"),
+                    metrics.get("f1"),
+                    metrics.get("n_train"),
+                    Json(metrics),
+                ),
             )
-            VALUES (%s, %s, 'active', 'stacked_pipeline', 'cardiovascular_disease_risk',
-                    %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (name, version)
-            DO UPDATE SET
-                status = 'active',
-                algorithm = EXCLUDED.algorithm,
-                use_case = EXCLUDED.use_case,
-                accuracy = EXCLUDED.accuracy,
-                auc = EXCLUDED.auc,
-                precision_score = EXCLUDED.precision_score,
-                recall_score = EXCLUDED.recall_score,
-                f1_score = EXCLUDED.f1_score,
-                training_data_size = EXCLUDED.training_data_size,
-                validation_metrics = EXCLUDED.validation_metrics
-            """,
-            (
-                name,
-                version,
-                metrics.get("accuracy"),
-                metrics.get("auc"),
-                metrics.get("precision"),
-                metrics.get("recall"),
-                metrics.get("f1"),
-                metrics.get("n_train"),
-                Json(metrics),
-            ),
-        )
         cursor.execute(
-            "UPDATE model_registry SET status = 'retired' WHERE NOT (name = %s AND version = %s) AND status <> 'retired'",
-            (name, version),
+            "UPDATE model_registry SET status = 'retired' WHERE (artifact_uri IS NULL OR NOT (artifact_uri = ANY(%s))) AND status <> 'retired'",
+            (keys,),
         )
+        cursor.execute("SELECT COUNT(*) AS n FROM model_registry WHERE status = 'active'")
+        if cursor.fetchone()["n"] == 0:
+            default = inference.get_schema(inference.DEFAULT_MODEL_KEY)
+            cursor.execute(
+                "UPDATE model_registry SET status = 'active' WHERE name = %s AND version = %s",
+                (default["model_name"], default["model_version"]),
+            )
     db.commit()
     _MODEL_REGISTRY_READY = True
 
@@ -774,10 +790,10 @@ RECOMMENDATION_BY_LEVEL = {
 }
 
 
-def fallback_risk_classification(probability: float) -> Dict[str, str]:
-    if probability < LOW_RISK_MAX_PROBABILITY:
+def fallback_risk_classification(probability: float, model_key: str = inference.DEFAULT_MODEL_KEY) -> Dict[str, str]:
+    if probability < _risk_band("LOW_RISK_MAX_PROBABILITY", "low_max", 0.30, model_key):
         level = "low"
-    elif probability < MEDIUM_RISK_MAX_PROBABILITY:
+    elif probability < _risk_band("MEDIUM_RISK_MAX_PROBABILITY", "medium_max", 0.70, model_key):
         level = "medium"
     else:
         level = "high"
@@ -1298,13 +1314,24 @@ def get_models(
         cursor.execute(
             """
             SELECT id AS model_id, name AS model_name, version AS model_version,
-                   algorithm, use_case, status, accuracy, auc,
+                   algorithm, use_case, status, accuracy, auc, description, validation_metrics, artifact_uri,
                    precision_score, recall_score, f1_score, created_at
             FROM model_registry
-            ORDER BY created_at DESC
+            ORDER BY (status = 'retired'), created_at DESC
             """
         )
         models = cursor.fetchall()
+
+    def extra(model: Dict[str, Any]) -> Dict[str, Any]:
+        metrics = model["validation_metrics"] or {}
+        values = {key: metrics.get(key) for key in (
+            "score_meaning", "label", "data", "sensitivity", "specificity", "ppv", "npv", "pr_auc",
+            "brier", "auc_ci95", "n_train", "n_test", "prevalence", "risk_bands", "prevent_comparison",
+        )}
+        if model["artifact_uri"] in inference.MODELS:
+            values.update(inference.model_description(model["artifact_uri"]))
+        return values
+
     return [
         {
             "model_id": model["model_id"],
@@ -1312,6 +1339,9 @@ def get_models(
             "model_version": model["model_version"],
             "algorithm": model["algorithm"] or "",
             "use_case": model["use_case"] or "",
+            "description": model["description"] or "",
+            "status": str(model["status"] or "").lower(),
+            "metrics": extra(model),
             "is_active": str(model["status"] or "").lower() == "active",
             "accuracy": float(model["accuracy"] or 0),
             "auc": float(model["auc"] or 0),
@@ -1322,6 +1352,30 @@ def get_models(
         }
         for model in models
     ]
+
+
+@app.post("/api/models/{model_id}/activate")
+def activate_model(
+    model_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Make an installed model the one used for new assessments (admin only)."""
+    user = authorize_user(db, authorization, allowed_roles={"admin"}, request=request)
+    ensure_active_model_registry_entry(db)
+    with db.cursor() as cursor:
+        cursor.execute("SELECT id, name, version, artifact_uri FROM model_registry WHERE id = %s", (model_id,))
+        model = cursor.fetchone()
+        if not model:
+            raise HTTPException(status_code=404, detail="Model not found")
+        if model["artifact_uri"] not in inference.available_model_keys():
+            raise HTTPException(status_code=409, detail="This model is not installed and cannot be activated")
+        cursor.execute("UPDATE model_registry SET status = 'available' WHERE status = 'active' AND id <> %s", (model_id,))
+        cursor.execute("UPDATE model_registry SET status = 'active' WHERE id = %s", (model_id,))
+    audit(db, request, user, action_type="update", resource_type="model_registry", resource_id=model_id)
+    db.commit()
+    return {"model_id": model_id, "model_name": model["name"], "model_version": model["version"], "is_active": True}
 
 
 @app.get("/api/models/{model_id}")
@@ -1669,41 +1723,6 @@ def _assessment_inputs(payload: RiskAssessmentRequest) -> Dict[str, Any]:
 PREVENT_RISK_LEVEL = {"low": "low", "borderline": "medium", "intermediate": "medium", "high": "high"}
 
 
-def _prevent_for(inputs: Dict[str, Any], sex: Optional[str]) -> Dict[str, Any]:
-    """AHA PREVENT 10-year CVD risk from the assessment inputs (unavailable outside its validated use)."""
-
-    def number(key: str) -> Optional[float]:
-        value = inputs.get(key)
-        return float(value) if value is not None else None
-
-    def yes_no(key: str) -> Optional[bool]:
-        text = str(inputs.get(key) or "").strip().lower()
-        return True if text == "yes" else False if text == "no" else None
-
-    age, creatinine = number("age"), number("creatinine")
-    sex_text = str(sex or "").strip().lower() or None
-    egfr = None
-    if creatinine is not None and age is not None and sex_text in ("male", "female"):
-        egfr = float(ckd_epi_2021(pd.Series([creatinine]), pd.Series([age]),
-                                  pd.Series([1.0 if sex_text == "male" else 0.0])).iloc[0])
-    diabetic = str(inputs.get("diabetic") or "").strip().lower()
-    smoking = yes_no("smokes_now")
-    if smoking is None and yes_no("smoker") is False:
-        smoking = False
-    bp_tx = yes_no("bp_med")
-    if bp_tx is None and yes_no("high_bp") is False:
-        bp_tx = False
-    result = prevent.ten_year_cvd(
-        age=age, sex=sex_text, total_chol=number("total_cholesterol"), hdl=number("hdl"),
-        sbp=number("sbp"), diabetes={"yes": True, "no": False, "borderline": False}.get(diabetic),
-        smoking=smoking, bmi=number("bmi"), egfr=egfr, bp_tx=bp_tx, statin=yes_no("chol_med"),
-        hba1c=number("hba1c"), uacr=number("urine_acr"),
-    )
-    if result["available"]:
-        result = {**result, "risk": round(result["risk"], 4), "egfr": round(egfr, 1)}
-    return result
-
-
 def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, Any]) -> Dict[str, Any]:
     require_patient_key(db)
     ensure_active_model_registry_entry(db)
@@ -1726,7 +1745,7 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
 
         cursor.execute(
             """
-            SELECT id AS model_id, name AS model_name, version AS model_version, algorithm
+            SELECT id AS model_id, name AS model_name, version AS model_version, algorithm, artifact_uri
             FROM model_registry
             WHERE lower(status) = 'active'
             ORDER BY created_at DESC
@@ -1736,6 +1755,7 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
         model_info = cursor.fetchone()
         if not model_info:
             raise HTTPException(status_code=400, detail="No active model found")
+    model_key = model_info["artifact_uri"] if model_info["artifact_uri"] in inference.MODELS else inference.DEFAULT_MODEL_KEY
 
     if payload.age is None:
         derived_age = calculate_age_years(psd_decrypt(patient)["date_of_birth"])
@@ -1754,14 +1774,21 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
     inputs = _assessment_inputs(payload)
     raw_row = inference.build_raw_row(inputs, patient.get("sex"))
     missing = inference.missing_inputs(raw_row)
-    probability = inference.predict_probability(raw_row)
+    probability = inference.predict_probability(raw_row, model_key)
+    model_metrics = inference.get_metrics(model_key)
+    # Inputs this model never uses (e.g. sleep for the 1999-2008 model) are not "missing".
+    model_inputs = set(inference.get_schema(model_key)["reference_values"])
+    missing = [column for column in missing if column in model_inputs]
     explanation = {
         "missingInputs": missing,
-        "modelVersion": inference.get_schema()["model_version"],
-        "decisionThreshold": float(inference.get_metrics().get("decision_threshold", 0.5)),
+        "modelVersion": inference.get_schema(model_key)["model_version"],
+        "modelKey": model_key,
+        "scoreMeaning": inference.model_description(model_key)["score_meaning"],
+        "scoreCaveat": inference.model_description(model_key)["caveat"],
+        "decisionThreshold": float(model_metrics.get("decision_threshold", 0.5)),
     }
     try:
-        explanation["contributions"] = explain_module.explain(raw_row)
+        explanation["contributions"] = explain_module.explain(raw_row, model_key=model_key)
     except Exception as exc:  # explanation is auxiliary; never block the assessment
         logging.getLogger(__name__).error("Factor explanation failed: %s", type(exc).__name__)
         explanation["contributions"] = []
@@ -1770,11 +1797,14 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
     with db.cursor() as cursor:
         # Risk level is determined by app thresholds first to keep classification
         # consistent across environments even when CDS rule ranges drift.
-        model_risk_level = fallback_risk_classification(probability)["risk_level"]
-        # PREVENT (10-year CVD risk from long-term cohorts) sets the level when it applies; the
-        # cross-sectional ML model is the fallback. Guideline alerts can then raise (never lower) it.
-        prevent_result = _prevent_for(inputs, patient.get("sex"))
-        if prevent_result["available"]:
+        model_risk_level = fallback_risk_classification(probability, model_key)["risk_level"]
+        # A prospective model (10-year CVD death) sets the level itself. With the cross-sectional
+        # model, PREVENT (10-year CVD risk from long-term cohorts) sets it when it applies and the
+        # model is the fallback. Guideline alerts can then raise (never lower) the level.
+        prevent_result = prevent.from_raw(raw_row)
+        if inference.is_prospective(model_key):
+            base_risk_level, risk_source = model_risk_level, "model"
+        elif prevent_result["available"]:
             base_risk_level, risk_source = PREVENT_RISK_LEVEL[prevent_result["category"]], "prevent"
         else:
             base_risk_level, risk_source = model_risk_level, "model"
@@ -1862,6 +1892,9 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
         "heartRate": payload.heartRate,
         "missingInputs": missing,
         "modelVersion": explanation["modelVersion"],
+        "modelName": model_info["model_name"],
+        "scoreMeaning": explanation["scoreMeaning"],
+        "scoreCaveat": explanation["scoreCaveat"],
         "contributions": explanation["contributions"],
         "modelRiskLevel": model_risk_level,
         "baseRiskLevel": base_risk_level,

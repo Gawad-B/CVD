@@ -121,15 +121,33 @@ function mapEncounter(raw: any): Encounter {
   };
 }
 
+const MODEL_STATUSES = new Set(["active", "available", "retired"]);
+const finite = (value: unknown): number | undefined => (value == null || !Number.isFinite(Number(value)) ? undefined : Number(value));
+
 function mapModel(raw: any): Model {
+  const metrics = raw.metrics && typeof raw.metrics === "object" ? raw.metrics : {};
+  const isActive = Boolean(raw.isActive ?? raw.is_active);
+  const status = MODEL_STATUSES.has(raw.status) ? raw.status : isActive ? "active" : "retired";
+  const ci = Array.isArray(metrics.auc_ci95) && metrics.auc_ci95.length === 2 ? metrics.auc_ci95.map(Number) : undefined;
   return {
     modelId: Number(raw.modelId ?? raw.model_id ?? 0),
     modelName: String(raw.modelName ?? raw.model_name ?? ""),
     modelVersion: String(raw.modelVersion ?? raw.model_version ?? ""),
     algorithm: String(raw.algorithm ?? ""),
     useCase: String(raw.useCase ?? raw.use_case ?? ""),
-    isActive: Boolean(raw.isActive ?? raw.is_active),
+    isActive,
+    status,
+    description: String(raw.description ?? metrics.label ?? ""),
+    scoreMeaning: metrics.score_meaning ? String(metrics.score_meaning) : undefined,
+    scoreCaveat: metrics.caveat ? String(metrics.caveat) : undefined,
+    ageMin: finite(metrics.age_min),
+    ageMax: finite(metrics.age_max),
     auc: Number(raw.auc ?? 0),
+    aucCi95: ci && ci.every(Number.isFinite) ? (ci as [number, number]) : undefined,
+    specificity: finite(metrics.specificity),
+    npv: finite(metrics.npv),
+    prAuc: finite(metrics.pr_auc),
+    nTest: finite(metrics.n_test),
     accuracy: Number(raw.accuracy ?? 0),
     precision: Number(raw.precision ?? raw.precision_score ?? 0),
     recall: Number(raw.recall ?? raw.recall_score ?? 0),
@@ -154,6 +172,8 @@ function mapExplanation(raw: any): RiskAssessment["explanation"] {
     riskSource: raw.riskSource === "prevent" || raw.riskSource === "model" ? raw.riskSource : undefined,
     prevent: mapPrevent(raw.prevent),
     clinicalAlerts: mapAlerts(raw.clinicalAlerts),
+    scoreMeaning: raw.scoreMeaning ? String(raw.scoreMeaning) : undefined,
+    scoreCaveat: raw.scoreCaveat ? String(raw.scoreCaveat) : undefined,
   };
 }
 
@@ -162,7 +182,13 @@ const PREVENT_MODELS = new Set(["base", "uacr", "hba1c", "full"]);
 
 export function mapPrevent(raw: any): PreventResult | undefined {
   if (!raw || typeof raw !== "object") return undefined;
-  if (raw.available !== true) return { available: false, reason: raw.reason ? String(raw.reason) : undefined };
+  if (raw.available !== true) {
+    return {
+      available: false,
+      reason: raw.reason ? String(raw.reason) : undefined,
+      ...(raw.ageOutOfRange === true ? { ageOutOfRange: true } : {}),
+    };
+  }
   const risk = Number(raw.risk);
   if (!Number.isFinite(risk)) return { available: false };
   return {
@@ -171,6 +197,9 @@ export function mapPrevent(raw: any): PreventResult | undefined {
     category: PREVENT_CATEGORIES.has(raw.category) ? raw.category : undefined,
     model: PREVENT_MODELS.has(raw.model) ? raw.model : undefined,
     egfr: Number.isFinite(Number(raw.egfr)) ? Number(raw.egfr) : undefined,
+    ...(raw.risk30 != null && Number.isFinite(Number(raw.risk30))
+      ? { risk30: Number(raw.risk30), model30: PREVENT_MODELS.has(raw.model30) ? raw.model30 : undefined }
+      : {}),
   };
 }
 
@@ -358,6 +387,10 @@ export async function createEncounter(payload: CreateEncounterInput): Promise<En
     body: JSON.stringify(payload),
   });
   return mapEncounter(data);
+}
+
+export async function activateModel(modelId: number): Promise<void> {
+  await fetchJson<unknown>(`/api/models/${modelId}/activate`, { method: "POST" });
 }
 
 export async function getModels(): Promise<Model[]> {

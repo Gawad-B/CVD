@@ -63,3 +63,30 @@ def test_risk_rises_with_bp_and_cholesterol():
     low = prevent.ten_year_cvd(sex="male", **{**REF, "sbp": 120, "total_chol": 170})["risk"]
     high = prevent.ten_year_cvd(sex="male", **{**REF, "sbp": 175, "total_chol": 300})["risk"]
     assert high > low
+
+
+def test_age_outside_range_is_flagged():
+    assert prevent.ten_year_cvd(sex="male", **{**REF, "age": 21})["ageOutOfRange"] is True
+    assert "ageOutOfRange" not in prevent.ten_year_cvd(sex="male", **{**REF, "sbp": 190})
+
+
+# 30-year values from preventr's tests (worked example and variants).
+@pytest.mark.parametrize("changes,extra,female,male", [
+    ({}, {}, 0.530, 0.514),
+    ({}, {"hba1c": 9.2}, 0.541, 0.524),
+    ({}, {"uacr": 92}, 0.565, 0.535),
+    ({}, {"uacr": 40}, 0.542, 0.514),
+    ({}, {"hba1c": 7.5}, 0.501, 0.491),
+    ({"age": 35, "sbp": 145}, {"uacr": 10}, 0.325, 0.305),
+])
+def test_thirty_year_cases(changes, extra, female, male):
+    for sex, expected in (("female", female), ("male", male)):
+        assert prevent.thirty_year_cvd(sex=sex, **{**REF, **changes}, **extra)["risk"] == pytest.approx(expected, abs=5e-4)
+
+
+def test_from_raw_adds_thirty_year_risk_only_for_ages_30_to_59():
+    row = {"RIAGENDR": 1, "LBXTC": 200, "LBDHDD": 45, "BPXOSY1": 160, "DIQ010": 1, "SMQ020": 2, "BMXBMI": 35,
+           "LBXSCR": 0.95, "BPQ150": 1, "BPQ101D": 2}
+    young = prevent.from_raw({**row, "RIDAGEYR": 45})
+    assert young["risk30"] > young["risk"] and young["model30"] == "base"
+    assert "risk30" not in prevent.from_raw({**row, "RIDAGEYR": 65})

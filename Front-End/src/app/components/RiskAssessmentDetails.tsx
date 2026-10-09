@@ -17,7 +17,7 @@ import {
   GENERAL_HEALTH_OPTIONS,
   LEGACY_FEATURE_LABELS,
   RACE_OPTIONS,
-  SCORE_DISCLAIMER,
+  scoreCaveat,
 } from "./clinicalConstants";
 import { OverrideModal } from "./dashboard/OverrideModal";
 import { ErrorCard, FactorsCard, Skeleton } from "./dashboard/Panels";
@@ -247,6 +247,9 @@ export function RiskAssessmentDetails() {
             <span className="block text-[12.5px] font-normal text-[#5b6b85]">
               {`${assessment.modelName}${modelVersion ? ` v${modelVersion}` : ""}`}
             </span>
+            {explanation?.scoreMeaning && (
+              <span className="block text-[12px] font-normal text-[#5b6b85]">{explanation.scoreMeaning}</span>
+            )}
           </Fact>
           <Fact label="ML model risk">
             <Badge variant={riskVariant(modelRiskLevel)} className="capitalize">
@@ -263,7 +266,7 @@ export function RiskAssessmentDetails() {
 
       {explanation?.prevent && (
         <Section title="10-year cardiovascular risk">
-          <PreventRisk prevent={explanation.prevent} />
+          <PreventRisk prevent={explanation.prevent} alerts={alerts} />
         </Section>
       )}
 
@@ -401,7 +404,7 @@ export function RiskAssessmentDetails() {
       </Section>
 
       <p className="px-1 text-[12px] leading-relaxed text-[#5b6b85]">
-        {`Decision support only. This estimate does not replace clinical judgement. ${SCORE_DISCLAIMER}`}
+        {`Decision support only. This estimate does not replace clinical judgement. ${scoreCaveat(explanation?.scoreCaveat)}`}
       </p>
 
       {overrideOpen && (

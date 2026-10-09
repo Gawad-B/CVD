@@ -13,6 +13,8 @@ export const MODEL_FACTS = {
   npv: "98%",
   patients: "5,330",
   testPatients: "1,066",
+  // Second model, Back-End/model/mortality/metrics_ml.json: n_train + n_test = 19,605.
+  mortalityPatients: "19,605",
   inputs: "34",
   inputsWord: "thirty-four",
 } as const;

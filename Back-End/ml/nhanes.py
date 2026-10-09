@@ -128,8 +128,10 @@ def ckd_epi_2021(creatinine_mg_dl: pd.Series, age: pd.Series, male: pd.Series) -
 class NhanesFeatures(BaseEstimator, TransformerMixin):
     """Stateless: raw NHANES-coded columns -> numeric model features (`columns`, FEATURE_COLUMNS by default)."""
 
-    def __init__(self, columns=None):
+    def __init__(self, columns=None, age_max=None, age_min=None):
         self.columns = columns
+        self.age_max = age_max  # cap at the oldest age seen in training (NHANES top-codes age)
+        self.age_min = age_min  # and at the youngest
 
     def fit(self, X, y=None):
         return self
@@ -139,7 +141,8 @@ class NhanesFeatures(BaseEstimator, TransformerMixin):
         f = pd.DataFrame(index=raw.index)
         age = _num(raw, "RIDAGEYR")
         sex = _code(raw, "RIAGENDR")
-        f["age"] = age
+        # getattr: older pickles predate these attributes
+        f["age"] = age.clip(lower=getattr(self, "age_min", None), upper=getattr(self, "age_max", None))
         f["male"] = sex.map({1: 1.0, 2: 0.0})
         f["education"] = _code(raw, "DMDEDUC2").where(lambda s: s.between(1, 5))
         f["income_ratio"] = _num(raw, "INDFMPIR")
@@ -185,10 +188,10 @@ class NhanesFeatures(BaseEstimator, TransformerMixin):
         return f[list(self.columns or FEATURE_COLUMNS)]
 
 
-def build_pipeline(model, columns=None) -> Pipeline:
+def build_pipeline(model, columns=None, age_max=None) -> Pipeline:
     """Raw NHANES columns -> features -> median imputation (+ missing flags) -> scaling -> model."""
     return Pipeline([
-        ("features", NhanesFeatures(columns)),
+        ("features", NhanesFeatures(columns, age_max)),
         ("impute", SimpleImputer(strategy="median", add_indicator=True)),
         ("scale", StandardScaler()),
         ("model", model),

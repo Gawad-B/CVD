@@ -481,6 +481,34 @@ Test results of the ML model (`model/metrics_ml.json`, version 4.1.0; 4,264 trai
 - Per-prediction `contributions` show the ML model's sensitivity to each input, not clinical importance. The tool supports screening and is not a diagnosis.
 - Each stored assessment records `model_id`; the active version is tracked in `model_registry`.
 
+### Age coverage
+
+| Age | AHA PREVENT | ML models |
+|---|---|---|
+| 18–29 | No validated equation exists; the app says so and lists the patient's major risk factors (from the clinical alerts) instead of a number | Scored, with age treated as 20 (youngest age in the training data) |
+| 30–59 | 10-year risk **and 30-year risk** (published 30-year equations; the long-term view matters because 10-year risk is low for most people this age) | Scored |
+| 60–79 | 10-year risk | Scored |
+| 80+ | No validated equation; risk factors listed instead | Scored with age capped at the oldest trained age: 80 for the cross-sectional model, 85 for the 10-year death model (NHANES top-codes age) |
+
+Each model also carries a plain-language note on what its score does **not** mean (`ml/inference.py` `MODELS`), shown on the result, assessment, dashboard and Models pages: the cross-sectional score is not a future risk; the 10-year death model is long-term risk for adults without existing CVD, does not detect current disease or short-term danger, and counts deaths only.
+
+### Second model: 10-year CVD death (switchable)
+
+`Back-End/model/cvd_mortality_v1.ipynb` builds a **prospective** model from NHANES 1999–2008 linked to the NCHS public-use Linked Mortality Files (National Death Index follow-up through 2019; `Back-End/ml/nhanes_mortality.py`). Adults 20+ without CVD at the exam (19,605 people, 589 deaths from heart disease or stroke within 10 years); every survivor has ≥ 130 months of follow-up, so the 10-year outcome is fully observed. Its score is the **10-year probability of cardiovascular death**, and because the inputs come before the outcome, higher BP, cholesterol and smoking raise it. Artifacts live in `Back-End/model/mortality/`.
+
+| Metric (test set, 3,921 people, 118 deaths) | Value |
+|---|---|
+| ROC AUC | 0.909 (95% CI 0.885–0.930); 5-fold CV AUC 0.888 |
+| PR-AUC | 0.239 (no-skill baseline 0.030) |
+| Calibration | Brier 0.026, ECE 0.007, mean predicted 3.02% vs observed 3.01% |
+| ≥ 1% (medium or high) | sensitivity 98.3%, specificity 55.7%, NPV 99.9% |
+| ≥ 5% (high) | sensitivity 80.5%, specificity 85.4%, PPV 14.6% |
+| vs AHA PREVENT on the same 1,711 people (ages 30–79, in range; 35 deaths) | AUC 0.859 vs 0.847; difference 95% CI −0.014 to 0.041 (not distinguishable) |
+
+Bands follow the ESC SCORE system for 10-year CVD death: low < 1%, medium 1–5%, high ≥ 5%. When this model is active its own score sets the risk level (PREVENT is still shown for reference); clinical alerts can still raise it. Limits: the outcome is CVD *death* only (non-fatal events are not in the public linkage), survey weights are not applied, risk at 80+ is under-estimated (predicted 16% vs observed 23%), and under 40 there are too few deaths to judge ranking within the age group.
+
+**Switching models:** both models are registered in `model_registry` (each row's `artifact_uri` names its artifact folder). An admin chooses the active one on the Models page (`POST /api/models/{id}/activate`, audited); new assessments use it, and each stored assessment keeps the model that scored it. The choice survives restarts; the default (cross-sectional) model is activated only when no installed model is active.
+
 ## Security, Privacy & Compliance
 
 - Sensitive separation: PII and sensitive patient attributes are kept in `patient_sensitive_data` separate from main patient records.

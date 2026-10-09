@@ -28,8 +28,8 @@ def _plain(column: str, value: Any) -> Any:
     return inference.display_value(column, value)
 
 
-def explain(raw_row: Dict[str, Any], top_k: int = 5) -> List[Dict[str, Any]]:
-    schema = inference.get_schema()
+def explain(raw_row: Dict[str, Any], top_k: int = 5, model_key: str = inference.DEFAULT_MODEL_KEY) -> List[Dict[str, Any]]:
+    schema = inference.get_schema(model_key)
     references = schema["reference_values"]
     labels = schema["labels"]
 
@@ -50,7 +50,7 @@ def explain(raw_row: Dict[str, Any], top_k: int = 5) -> List[Dict[str, Any]]:
         variant[column] = references[column]
         rows.append(variant)
 
-    probabilities = inference.get_model().predict_proba(inference.to_frame(rows))[:, 1]
+    probabilities = inference.get_model(model_key).predict_proba(inference.to_frame(rows))[:, 1]
 
     original = float(probabilities[0])
     items = [

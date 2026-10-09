@@ -48,8 +48,12 @@ export const LEGACY_FEATURE_LABELS: Record<string, string> = {
 
 export const ALL_FEATURE_LABELS: Record<string, string> = { ...FEATURE_LABELS, ...LEGACY_FEATURE_LABELS };
 
-// Shown wherever the ML score is displayed: it is calibrated, but to existing disease, not future risk.
+// Fallback wording for the ML score when an assessment does not say which model scored it
+// (assessments made before model switching); otherwise each model's own caveat is shown.
 export const SCORE_DISCLAIMER = "ML score: calibrated chance of already-diagnosed CVD among NHANES adults, not a 10-year risk.";
+
+/** The scoring model's own caveat when known, else the fallback wording. */
+export const scoreCaveat = (caveat?: string) => caveat || SCORE_DISCLAIMER;
 
 // Code maps mirror Back-End/ml/inference.py (RACE_CODES, EDUCATION_CODES, activity unit).
 export const RACE_OPTIONS: Array<{ value: string; label: string }> = [

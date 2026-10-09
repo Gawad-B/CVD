@@ -56,11 +56,27 @@ export interface Model {
   algorithm: string;
   useCase: string;
   isActive: boolean;
+  /** active = scoring new assessments; available = installed, can be activated; retired = no longer installed. */
+  status: "active" | "available" | "retired";
+  /** What the outcome/label is (from the training notebook). */
+  description: string;
+  /** What the model's score means, e.g. "10-year probability of cardiovascular death". */
+  scoreMeaning?: string;
+  /** What the score does not tell you. */
+  scoreCaveat?: string;
+  /** Age span of the training data; ages outside it are scored as the nearest trained age. */
+  ageMin?: number;
+  ageMax?: number;
   auc: number;
+  aucCi95?: [number, number];
   accuracy: number;
   precision: number;
   recall: number;
   f1Score: number;
+  specificity?: number;
+  npv?: number;
+  prAuc?: number;
+  nTest?: number;
   trainedAt: string;
 }
 
@@ -167,6 +183,11 @@ export interface PreventResult {
   model?: "base" | "uacr" | "hba1c" | "full";
   egfr?: number;
   reason?: string;
+  /** Unavailable because no validated equation exists for the patient's age (outside 30-79). */
+  ageOutOfRange?: boolean;
+  /** 30-year total CVD risk (0-1), ages 30-59 only. */
+  risk30?: number;
+  model30?: "base" | "uacr" | "hba1c";
 }
 
 export interface AssessmentExplanation {
@@ -181,6 +202,10 @@ export interface AssessmentExplanation {
   riskSource?: "prevent" | "model";
   prevent?: PreventResult;
   clinicalAlerts: ClinicalAlert[];
+  /** What the ML score means for the model that scored this assessment. */
+  scoreMeaning?: string;
+  /** What that score does not tell you. */
+  scoreCaveat?: string;
 }
 
 export type AuditOutcome = "success" | "failure" | "denied";
@@ -287,6 +312,9 @@ export interface RiskAssessmentResponse {
   riskSource?: "prevent" | "model";
   prevent?: PreventResult;
   clinicalAlerts?: ClinicalAlert[];
+  modelName?: string;
+  scoreMeaning?: string;
+  scoreCaveat?: string;
 }
 
 export interface DashboardStats {

@@ -1,0 +1,171 @@
+{
+  "model_name": "CVD 10-year Mortality Logistic",
+  "model_version": "1.0.0",
+  "algorithm": "Logistic regression (C=0.01), sigmoid-calibrated (5-fold)",
+  "trained_at": "2026-10-08T11:29:21.791764+00:00",
+  "data": "NHANES 1999-2008 adults 20+ without CVD at exam, NCHS Linked Mortality Files (follow-up to 2019)",
+  "label": "Death from heart disease or stroke within 10 years of the exam (UCOD_LEADING 1 or 5)",
+  "score_meaning": "10-year probability of cardiovascular death",
+  "n_train": 15684,
+  "n_test": 3921,
+  "prevalence": 0.030043356286661566,
+  "age_range": [
+    20,
+    85
+  ],
+  "threshold_rule": "fixed clinical bands for 10-year CVD death (ESC SCORE style): <1% low, 1-5% medium, >=5% high",
+  "decision_threshold": 0.01,
+  "risk_bands": {
+    "low_max": 0.01,
+    "medium_max": 0.05
+  },
+  "auc": 0.9092554049657496,
+  "auc_ci95": [
+    0.8853650329579236,
+    0.9298158902204772
+  ],
+  "cv_auc": 0.8876685670694818,
+  "model_comparison_cv_auc": {
+    "Logistic regression (C=0.01)": 0.888,
+    "Logistic regression (C=0.1)": 0.885,
+    "Logistic regression (C=1)": 0.882,
+    "HistGradientBoosting": 0.886,
+    "LightGBM": 0.889,
+    "XGBoost": 0.888
+  },
+  "pr_auc": 0.23878577887859784,
+  "sensitivity": 0.9830508474576272,
+  "recall": 0.9830508474576272,
+  "specificity": 0.5569287404680515,
+  "precision": 0.06440866185452526,
+  "ppv": 0.06440866185452526,
+  "npv": 0.9990566037735849,
+  "balanced_accuracy": 0.7699897939628393,
+  "accuracy": 0.5697526141290488,
+  "f1": 0.12089630015633142,
+  "flagged_share": 0.4593216016322367,
+  "high_band": {
+    "sensitivity": 0.8050847457627118,
+    "specificity": 0.8540625821719695,
+    "ppv": 0.14615384615384616,
+    "npv": 0.992968511158667
+  },
+  "brier": 0.025588651697493248,
+  "ece": 0.0067812269088242914,
+  "mean_predicted": 0.030190511459049666,
+  "observed_rate": 0.030094363682733997,
+  "calibration": [
+    {
+      "mean_predicted": 0.0012472676170276339,
+      "observed_rate": 0.0
+    },
+    {
+      "mean_predicted": 0.002118760706162925,
+      "observed_rate": 0.0
+    },
+    {
+      "mean_predicted": 0.003146818887009482,
+      "observed_rate": 0.0
+    },
+    {
+      "mean_predicted": 0.0045279889753716595,
+      "observed_rate": 0.00510204081632653
+    },
+    {
+      "mean_predicted": 0.0067675258161781875,
+      "observed_rate": 0.0
+    },
+    {
+      "mean_predicted": 0.010529024700157076,
+      "observed_rate": 0.00510204081632653
+    },
+    {
+      "mean_predicted": 0.016925476572417282,
+      "observed_rate": 0.01020408163265306
+    },
+    {
+      "mean_predicted": 0.02946695236228902,
+      "observed_rate": 0.02040816326530612
+    },
+    {
+      "mean_predicted": 0.057208886712785824,
+      "observed_rate": 0.061224489795918366
+    },
+    {
+      "mean_predicted": 0.17004024704681706,
+      "observed_rate": 0.1989795918367347
+    }
+  ],
+  "confusion_matrix": [
+    [
+      2118,
+      1685
+    ],
+    [
+      2,
+      116
+    ]
+  ],
+  "note": "Prospective: inputs measured before the outcome. Outcome is CVD death only (non-fatal heart attacks and strokes are not in the public linkage). Survey weights not applied.",
+  "prevent_comparison": {
+    "people": 1711,
+    "cvd_deaths": 35,
+    "prevent_auc": 0.8472212751449029,
+    "model_auc": 0.8589157858847596,
+    "difference_ci95": [
+      -0.014108071412990541,
+      0.04055726158012839
+    ]
+  },
+  "by_age": {
+    "(19, 29]": {
+      "adults": 813.0,
+      "cvd_deaths": 0.0,
+      "mean predicted": 0.002623223711168656,
+      "observed": 0.0,
+      "AUC within group": null
+    },
+    "(29, 39]": {
+      "adults": 742.0,
+      "cvd_deaths": 1.0,
+      "mean predicted": 0.005220729344746803,
+      "observed": 0.0013477088948787063,
+      "AUC within group": 0.9986504723346828
+    },
+    "(39, 49]": {
+      "adults": 673.0,
+      "cvd_deaths": 8.0,
+      "mean predicted": 0.01039875581347528,
+      "observed": 0.01188707280832095,
+      "AUC within group": 0.7986842105263157
+    },
+    "(49, 59]": {
+      "adults": 549.0,
+      "cvd_deaths": 5.0,
+      "mean predicted": 0.01984430699643931,
+      "observed": 0.009107468123861567,
+      "AUC within group": 0.7856617647058824
+    },
+    "(59, 69]": {
+      "adults": 560.0,
+      "cvd_deaths": 15.0,
+      "mean predicted": 0.043344007701000074,
+      "observed": 0.026785714285714284,
+      "AUC within group": 0.7070336391437309
+    },
+    "(69, 79]": {
+      "adults": 356.0,
+      "cvd_deaths": 36.0,
+      "mean predicted": 0.0939193901532054,
+      "observed": 0.10112359550561797,
+      "AUC within group": 0.6980902777777778
+    },
+    "(79, 85]": {
+      "adults": 228.0,
+      "cvd_deaths": 53.0,
+      "mean predicted": 0.16127060951463287,
+      "observed": 0.2324561403508772,
+      "AUC within group": 0.6348247978436657
+    }
+  }
+}

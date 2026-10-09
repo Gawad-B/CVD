@@ -1,4 +1,4 @@
-import type { PreventResult } from "../api/types";
+import type { ClinicalAlert, PreventResult } from "../api/types";
 import { cn } from "../ui";
 
 const CATEGORY_TEXT = { low: "Low", borderline: "Borderline", intermediate: "Intermediate", high: "High" } as const;
@@ -10,9 +10,38 @@ const MODEL_TEXT = {
   full: "with HbA1c and urine albumin/creatinine",
 } as const;
 
+// Major risk factors among the clinical alerts (mirrors Back-End/clinical_alerts.py _MAJOR).
+const MAJOR_RISK_FACTORS = new Set(["bp_crisis", "bp_stage2", "cholesterol_high", "hba1c_diabetes", "hdl_low", "smoker"]);
+
 /** AHA PREVENT 10-year total CVD risk, or the reason it could not be calculated. */
-export function PreventRisk({ prevent, className }: { prevent?: PreventResult; className?: string }) {
+export function PreventRisk({
+  prevent,
+  alerts = [],
+  className,
+}: {
+  prevent?: PreventResult;
+  /** Clinical alerts, used for the risk-factor summary when no equation applies to the patient's age. */
+  alerts?: ClinicalAlert[];
+  className?: string;
+}) {
   if (!prevent) return null;
+  if (prevent.ageOutOfRange) {
+    const major = alerts.filter((a) => MAJOR_RISK_FACTORS.has(a.code));
+    return (
+      <div className={cn("text-[13px] text-[#5b6b85]", className)}>
+        <p>
+          <span className="font-semibold text-[#33405a]">10-year CVD risk: no validated equation for this age. </span>
+          AHA PREVENT covers ages 30–79; outside that range a 10-year number would not be reliable, so the risk factors are
+          listed instead.
+        </p>
+        <p className="mt-1.5 font-semibold text-[#33405a]">
+          {major.length === 0
+            ? "No major risk factors flagged."
+            : `${major.length} major risk factor${major.length === 1 ? "" : "s"}: ${major.map((a) => a.title).join(", ")}.`}
+        </p>
+      </div>
+    );
+  }
   if (!prevent.available || prevent.risk === undefined) {
     return (
       <p className={cn("text-[13px] text-[#5b6b85]", className)}>
@@ -38,6 +67,12 @@ export function PreventRisk({ prevent, className }: { prevent?: PreventResult; c
           .filter(Boolean)
           .join(" · ")}
       </p>
+      {prevent.risk30 !== undefined && (
+        <p className="mt-2 text-[13px]">
+          <span className="font-semibold text-[#33405a]">{`30-year CVD risk: ${(prevent.risk30 * 100).toFixed(1)}%`}</span>
+          {" · long-term view for ages 30–59, where 10-year risk is low for most people"}
+        </p>
+      )}
     </div>
   );
 }

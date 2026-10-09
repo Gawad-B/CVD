@@ -84,3 +84,19 @@ def test_get_model_is_cached():
 def test_predict_probability_in_unit_interval():
     probability = inference.predict_probability(inference.build_raw_row({"age": 60}, "male"))
     assert 0.0 <= probability <= 1.0
+
+
+@pytest.mark.parametrize("key", inference.available_model_keys())
+def test_ages_outside_training_data_score_as_the_nearest_trained_age(key):
+    low, high = inference.MODELS[key]["age_range"]
+    base = {"sbp": 130, "total_cholesterol": 200, "hdl": 50, "smoker": "no"}  # no creatinine: eGFR uses the real age
+    score = lambda age: inference.predict_probability(inference.build_raw_row({**base, "age": age}, "male"), key)  # noqa: E731
+    assert score(high + 10) == pytest.approx(score(high))
+    assert score(18) == pytest.approx(score(low))
+
+
+def test_every_model_describes_its_score():
+    for key in inference.MODELS:
+        description = inference.model_description(key)
+        assert description["score_meaning"] and description["caveat"]
+        assert description["age_min"] == 20
