@@ -23,6 +23,26 @@ const ZONES = [
   { from: 0.05, to: SCALE_MAX, color: RISK_TONE.high.color },
 ] as const;
 
+const ORDER = { low: 0, medium: 1, high: 2, unknown: -1 } as const;
+
+/** Level the death percentage gives on its own (ESC SCORE bands). */
+export function deathBand(probability: number): "low" | "medium" | "high" {
+  return probability >= 0.05 ? "high" : probability >= 0.01 ? "medium" : "low";
+}
+
+function Legend({ items }: { items: Array<[RiskLevel, string]> }) {
+  return (
+    <ul aria-label="What the levels mean" className="mt-3 flex flex-col gap-1 rounded-[12px] bg-white/70 px-3 py-2.5 text-[12.5px] text-[#33405a]">
+      {items.map(([level, text]) => (
+        <li key={level} className="flex items-center gap-2">
+          <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: RISK_TONE[level].color }} />
+          {text}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** "About 3 in 100" wording, which is easier to grasp than a bare percentage. */
 export function inHundred(probability: number): string {
   const n = Math.round(probability * 100);
@@ -110,6 +130,18 @@ export function RiskResult({ level, scoreType, probability, className }: Props) 
             <span className="text-[13px] text-[#33405a]">{`${inHundred(probability)} people like this patient`}</span>
           </p>
           <DeathScale probability={probability} className="mt-3" />
+          <Legend
+            items={[
+              ["low", "Under 1% = Low risk"],
+              ["medium", "1% to 5% = Medium risk"],
+              ["high", "5% or more = High risk"],
+            ]}
+          />
+          {ORDER[level] > ORDER[deathBand(probability)] && (
+            <p className="mt-2 rounded-[12px] bg-[#fef3c7] px-3 py-2 text-[12.5px] leading-relaxed text-[#92400e]">
+              {`The percentage alone is ${LEVEL_NAME[deathBand(probability)]}, but the level is ${LEVEL_NAME[level as "medium" | "high"]} because of the clinical alerts or the AHA PREVENT result (dangerous readings count even when the 10-year death risk is small).`}
+            </p>
+          )}
         </div>
       ) : (
         <div>
@@ -121,6 +153,13 @@ export function RiskResult({ level, scoreType, probability, className }: Props) 
             {level === "unknown" ? "Unknown risk" : `${LEVEL_NAME[level]} risk`}
           </p>
           <LevelMeter level={level} className="mt-3" />
+          <Legend
+            items={[
+              ["low", "Low = no warning signs"],
+              ["medium", "Medium = some risk factors, follow up within 3 months"],
+              ["high", "High = needs prompt clinician review"],
+            ]}
+          />
         </div>
       )}
       <p className="text-[13.5px] leading-relaxed text-[#33405a]">

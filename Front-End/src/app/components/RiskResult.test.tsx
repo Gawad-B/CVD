@@ -16,6 +16,18 @@ describe("RiskResult", () => {
     expect(screen.getByText("About 7 in 100 people like this patient")).toBeInTheDocument();
   });
 
+  it("shows the ranges and explains a level raised above the percentage", () => {
+    render(<RiskResult level="high" scoreType="death_10y" probability={0.004} />);
+    expect(screen.getByText("Under 1% = Low risk")).toBeInTheDocument();
+    expect(screen.getByText("5% or more = High risk")).toBeInTheDocument();
+    expect(screen.getByText(/percentage alone is Low, but the level is High/)).toBeInTheDocument();
+  });
+
+  it("does not add the note when the percentage and level agree", () => {
+    render(<RiskResult level="medium" scoreType="death_10y" probability={0.03} />);
+    expect(screen.queryByText(/percentage alone/)).not.toBeInTheDocument();
+  });
+
   it("words tiny risks without rounding them to zero", () => {
     expect(inHundred(0.004)).toBe("Fewer than 1 in 100");
     expect(inHundred(0.031)).toBe("About 3 in 100");
