@@ -113,7 +113,7 @@ describe("Assessments: past list", () => {
     const row = (await screen.findByText("Alder Fennimore")).closest("a")!;
     expect(row).toHaveAttribute("href", "/dashboard?assessment=2");
     expect(within(row).getByText("P-0011 · 1 Oct 2026 · Signed off")).toBeInTheDocument();
-    expect(within(row).getByText("25%")).toBeInTheDocument();
+    expect(within(row).getByText("25.0%")).toBeInTheDocument();
     expect(within(row).getByText("high")).toHaveAttribute("data-variant", "high");
     expect(within(screen.getByText("Marisol Quill").closest("a")!).getByText(/Pending review/)).toBeInTheDocument();
   });
@@ -256,7 +256,7 @@ describe("Assessments: new assessment form", () => {
     await user.click(screen.getByRole("button", { name: "Run assessment" }));
 
     const panel = await screen.findByRole("region", { name: "Assessment result" });
-    expect(within(panel).getByText("66%")).toBeInTheDocument();
+    expect(within(panel).getByText("66.0%")).toBeInTheDocument();
     expect(within(panel).getByText("high risk")).toHaveAttribute("data-variant", "high");
     expect(within(panel).getByText("Refer to cardiology.")).toBeInTheDocument();
     expect(within(panel).getByText(/estimated from population medians: HbA1c \(%\), hs-CRP \(mg\/L\)/)).toBeInTheDocument();

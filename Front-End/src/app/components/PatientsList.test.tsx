@@ -85,7 +85,7 @@ describe("PatientsList", () => {
     expect(first.getByText("P-0001")).toBeInTheDocument();
     expect(first.getByText(/^Female, \d+$/)).toBeInTheDocument();
     expect(first.getByText("1 Oct 2026")).toBeInTheDocument();
-    expect(first.getByText("42%")).toBeInTheDocument();
+    expect(first.getByText("42.0%")).toBeInTheDocument();
     expect(first.getByText("high")).toHaveAttribute("data-variant", "high"); // effective, not the model's "medium"
 
     const second = within(rows[2]);

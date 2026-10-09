@@ -4,6 +4,7 @@ import { EcgStrip, HeartCredit, LazyHeart3D, RISK_TONE, heartRateDisplay } from 
 import { RISK_LABEL, formatDate, isOverridden } from "./logic";
 import type { RiskAssessment } from "../../api/types";
 import { scoreCaveat } from "../clinicalConstants";
+import { formatScore } from "../formatScore";
 
 interface Props {
   assessment: RiskAssessment;
@@ -91,7 +92,7 @@ export function HeartStage({ assessment, code, meta }: Props) {
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
             <span className="text-[30px] font-bold tracking-[-0.02em] tabular-nums text-[#0b1530]">
-              {(assessment.probabilityCvd * 100).toFixed(1)}%
+              {formatScore(assessment.probabilityCvd)}
             </span>
             <span className="text-[12px] text-[#5b6b85]">Model score</span>
           </div>

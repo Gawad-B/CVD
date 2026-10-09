@@ -1798,12 +1798,17 @@ def _predict_and_store(payload: RiskAssessmentRequest, db: Any, user: Dict[str, 
         # Risk level is determined by app thresholds first to keep classification
         # consistent across environments even when CDS rule ranges drift.
         model_risk_level = fallback_risk_classification(probability, model_key)["risk_level"]
-        # A prospective model (10-year CVD death) sets the level itself. With the cross-sectional
-        # model, PREVENT (10-year CVD risk from long-term cohorts) sets it when it applies and the
-        # model is the fallback. Guideline alerts can then raise (never lower) the level.
+        # A prospective model (10-year CVD death) and PREVENT (10-year risk of any CVD event) are
+        # both forward-looking, so the higher of the two levels is used and neither can hide a risk
+        # the other shows. With the cross-sectional model, PREVENT sets the level when it applies
+        # and the model is the fallback. Guideline alerts can then raise (never lower) the level.
         prevent_result = prevent.from_raw(raw_row)
         if inference.is_prospective(model_key):
-            base_risk_level, risk_source = model_risk_level, "model"
+            prevent_level = PREVENT_RISK_LEVEL[prevent_result["category"]] if prevent_result["available"] else "low"
+            if clinical_alerts.RISK_ORDER[prevent_level] > clinical_alerts.RISK_ORDER[model_risk_level]:
+                base_risk_level, risk_source = prevent_level, "prevent"
+            else:
+                base_risk_level, risk_source = model_risk_level, "model"
         elif prevent_result["available"]:
             base_risk_level, risk_source = PREVENT_RISK_LEVEL[prevent_result["category"]], "prevent"
         else:

@@ -50,8 +50,11 @@ def test_admin_switches_model_and_new_assessments_use_it(client, admin, make_pat
     assert after["modelName"] == MORTALITY
     assert after["scoreMeaning"] == "10-year probability of cardiovascular death"
     assert "does not detect current disease" in after["scoreCaveat"]
-    assert after["riskSource"] == "model"  # a prospective model sets the level itself
-    assert after["prevent"]["available"] is True  # PREVENT is still shown for reference
+    assert after["prevent"]["available"] is True
+    # With a prospective model the level is the higher of the model's and PREVENT's levels.
+    order = {"low": 0, "medium": 1, "high": 2}
+    prevent_level = {"low": "low", "borderline": "medium", "intermediate": "medium", "high": "high"}[after["prevent"]["category"]]
+    assert after["baseRiskLevel"] == max(after["modelRiskLevel"], prevent_level, key=order.get)
     assert "SLD012" not in after["missingInputs"]  # sleep is not an input of this model
 
 
@@ -88,3 +91,17 @@ def test_mortality_model_rises_with_blood_pressure_and_cholesterol():
     low = inference.predict_probability(inference.build_raw_row({**base, "sbp": 118, "total_cholesterol": 170}, "male"), "nhanes_mortality")
     high = inference.predict_probability(inference.build_raw_row({**base, "sbp": 175, "total_cholesterol": 290}, "male"), "nhanes_mortality")
     assert high > low
+
+
+def test_prevent_lifts_a_low_mortality_score(client, admin, make_patient):
+    """A 45-year-old with moderate risk factors: CVD death is rare, but PREVENT shows real event risk."""
+    target = _models(client, admin)[MORTALITY]["model_id"]
+    assert client.post(f"/api/models/{target}/activate", headers=admin).status_code == 200
+    pid = make_patient(admin, sex="male")["patient_id"]
+    payload = {"patientId": pid, "age": 45, "bmi": 27, "systolicBp": 138, "diastolicBp": 86, "totalCholesterol": 235,
+               "hdl": 38, "creatinine": 1.0, "diabetic": "yes", "smoker": "yes", "smokesNow": "yes", "highBp": "no",
+               "highChol": "yes", "cholMed": "no", "hba1cPercent": 6.4, "generalHealth": 3}
+    body = client.post("/api/risk-assessments", json=payload, headers=admin).json()
+    assert body["modelRiskLevel"] == "low"
+    assert body["prevent"]["category"] in ("borderline", "intermediate", "high")
+    assert body["riskSource"] == "prevent" and body["baseRiskLevel"] in ("medium", "high")

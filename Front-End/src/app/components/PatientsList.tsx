@@ -11,6 +11,7 @@ import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, matchesQuery, sexLabel } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
 import { PageHeader } from "./PageHeader";
+import { formatScore } from "./formatScore";
 
 const fullName = (p: Patient) => `${p.firstName} ${p.lastName}`.trim();
 
@@ -96,7 +97,7 @@ export function PatientsList() {
                     <td className={`${TD} text-[#33405a]`}>{sexAge(p)}</td>
                     <td className={`${TD} text-[#33405a]`}>{last ? formatDate(last.createdAt) : "—"}</td>
                     <td className={`${TD} tabular-nums text-[#33405a]`}>
-                      {last ? `${Math.round(last.probabilityCvd * 100)}%` : "—"}
+                      {last ? formatScore(last.probabilityCvd) : "—"}
                     </td>
                     <td className={TD}>
                       {last ? (

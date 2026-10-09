@@ -24,6 +24,7 @@ import { ErrorCard, FactorsCard, Skeleton } from "./dashboard/Panels";
 import { formatDate, isOverridden, patientMeta, recommendationMismatch, sexLabel } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
 import { formatFactorValue } from "./formatFactorValue";
+import { formatScore } from "./formatScore";
 
 const textarea =
   "w-full rounded-[12px] border border-[#d6deec] bg-white px-3.5 py-3 text-[14px] leading-relaxed text-[#0b1530] placeholder:text-[#8fa1c4] focus:border-[#1f5eff]";
@@ -243,7 +244,7 @@ export function RiskAssessmentDetails() {
             </span>
           </Fact>
           <Fact label="ML model score">
-            <span className="tabular-nums">{`${(assessment.probabilityCvd * 100).toFixed(1)}%`}</span>
+            <span className="tabular-nums">{formatScore(assessment.probabilityCvd)}</span>
             <span className="block text-[12.5px] font-normal text-[#5b6b85]">
               {`${assessment.modelName}${modelVersion ? ` v${modelVersion}` : ""}`}
             </span>

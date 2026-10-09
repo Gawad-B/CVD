@@ -23,6 +23,7 @@ import { ClinicalAlerts } from "../ClinicalAlerts";
 import { PreventRisk } from "../PreventRisk";
 import { ALL_FEATURE_LABELS, INPUT_RANGES, scoreCaveat } from "../clinicalConstants";
 import { ageFromDob } from "../dateOfBirth";
+import { formatScore } from "../formatScore";
 
 interface Props {
   patients: Patient[];
@@ -51,7 +52,7 @@ function ResultPanel({ result, stale }: { result: RiskAssessmentResponse; stale:
             {stale ? "Previous result (inputs changed since this run)" : "ML model score"}
           </p>
           <p className="text-[30px] font-bold leading-tight tracking-[-0.02em] tabular-nums text-[#0b1530]">
-            {Math.round(result.probability * 100)}%
+            {formatScore(result.probability)}
           </p>
           {result.scoreMeaning && (
             <p className="text-[12px] text-[#5b6b85]">{`${result.modelName ? `${result.modelName}: ` : ""}${result.scoreMeaning}`}</p>

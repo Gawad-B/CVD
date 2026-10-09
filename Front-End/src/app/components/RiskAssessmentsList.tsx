@@ -10,6 +10,7 @@ import { ErrorCard, Skeleton } from "./dashboard/Panels";
 import { formatDate } from "./dashboard/logic";
 import { useLoader } from "./dashboard/useLoader";
 import { PageHeader } from "./PageHeader";
+import { formatScore } from "./formatScore";
 
 type Filter = "all" | RiskLevel;
 
@@ -69,7 +70,7 @@ function PastAssessments({
                 </span>
                 <span className="text-[14px] font-semibold tabular-nums text-[#33405a]">
                   <span className="sr-only">Model score </span>
-                  {Math.round(a.probabilityCvd * 100)}%
+                  {formatScore(a.probabilityCvd)}
                 </span>
                 <Badge variant={riskVariant(a.effectiveRiskLevel)} className="shrink-0 capitalize">
                   {a.effectiveRiskLevel}
